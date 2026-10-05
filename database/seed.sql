@@ -229,5 +229,68 @@ ON DUPLICATE KEY UPDATE `role`=VALUES(`role`);
 INSERT INTO `users` (`id`, `full_name`, `email`, `password_hash`, `role`, `campus_id`, `institution_id`, `department_id`) VALUES
 (1, 'Demo Student', 'student@campusx.edu', '4b1e328d1a0b2d5969a0c401b077decd94103b7adbe35dd7372e956b85eec496', 'Student', 1, 1, 1),
 (2, 'Dr. Nilesh Patil', 'nilesh.patil@campusx.edu', '4b1e328d1a0b2d5969a0c401b077decd94103b7adbe35dd7372e956b85eec496', 'Faculty', 1, 1, 1),
-(3, 'Dr. Sneha More', 'sneha.more@campusx.edu', '4b1e328d1a0b2d5969a0c401b077decd94103b7adbe35dd7372e956b85eec496', 'Researcher', 1, 1, 2)
+(3, 'Dr. Sneha More', 'sneha.more@campusx.edu', '4b1e328d1a0b2d5969a0c401b077decd94103b7adbe35dd7372e956b85eec496', 'Researcher', 1, 1, 2),
+(11, 'Dr. Sandeep Thakur', 'sandeep.thakur@campusx.edu', '4b1e328d1a0b2d5969a0c401b077decd94103b7adbe35dd7372e956b85eec496', 'Faculty', 1, 1, 1)
 ON DUPLICATE KEY UPDATE `email`=VALUES(`email`), `password_hash`=VALUES(`password_hash`);
+
+-- 14. SEED SKILLS
+INSERT INTO `skills` (`id`, `name`) VALUES
+(1, 'C++'),
+(2, 'Python'),
+(3, 'MySQL'),
+(4, 'FastAPI'),
+(5, 'Machine Learning'),
+(6, 'Deep Learning'),
+(7, 'Natural Language Processing'),
+(8, 'Computer Vision'),
+(9, 'Data Science'),
+(10, 'Data Structures & Algorithms'),
+(11, 'Graph Algorithms'),
+(12, 'Cybersecurity'),
+(13, 'Network Security'),
+(14, 'Cryptography'),
+(15, 'Cloud Computing'),
+(16, 'Distributed Systems'),
+(17, 'Internet of Things (IoT)'),
+(18, 'Embedded Systems'),
+(19, 'Bioinformatics'),
+(20, 'Molecular Docking'),
+(21, 'Cheminformatics'),
+(22, 'Software Engineering'),
+(23, 'React'),
+(24, 'PyTorch'),
+(25, 'TensorFlow'),
+(26, 'Docker & Kubernetes'),
+(27, 'Microservices'),
+(28, 'Big Data Analytics'),
+(29, 'Reinforcement Learning'),
+(30, 'Wireless Sensor Networks')
+ON DUPLICATE KEY UPDATE `name`=VALUES(`name`);
+
+-- 15. SEED RESEARCHER_SKILLS
+INSERT INTO `researcher_skills` (`researcher_id`, `skill_id`) VALUES
+-- Dr. Nilesh Patil
+(1, 2), (1, 5), (1, 6), (1, 10), (1, 11), (1, 24),
+-- Dr. Sneha More
+(2, 2), (2, 12), (2, 13), (2, 14), (2, 17),
+-- Dr. Rahul Varma
+(3, 2), (3, 5), (3, 6), (3, 8), (3, 24),
+-- Prof. Anita Deshmukh
+(4, 2), (4, 3), (4, 7), (4, 9), (4, 28),
+-- Dr. Rajesh Kulkarni
+(5, 1), (5, 17), (5, 18), (5, 30),
+-- Dr. Priya Mehta
+(6, 19), (6, 20), (6, 21), (6, 9),
+-- Dr. Vikram Joshi
+(7, 2), (7, 5), (7, 20), (7, 21),
+-- Dr. Kavita Nair
+(8, 2), (8, 7), (8, 9), (8, 10), (8, 11),
+-- Prof. Amit Sawant
+(9, 2), (9, 15), (9, 16), (9, 26), (9, 27),
+-- Prof. Neha Gupta
+(10, 2), (10, 5), (10, 17), (10, 29),
+-- Dr. Sandeep Thakur
+(11, 2), (11, 3), (11, 4), (11, 10), (11, 22),
+-- Dr. Meera Iyer
+(12, 2), (12, 6), (12, 7), (12, 19)
+ON DUPLICATE KEY UPDATE `skill_id`=VALUES(`skill_id`);

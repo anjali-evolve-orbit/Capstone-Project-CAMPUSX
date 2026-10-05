@@ -318,10 +318,26 @@ def run_bfs(start_id: int = Query(...), target_id: int = Query(...)):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
 
 
+@app.get("/api/network/bfs-traversal")
+def get_bfs_traversal(start_id: int = Query(...)):
+    try:
+        return NetworkService.get_bfs_traversal(start_id)
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
 @app.get("/api/network/dfs")
 def run_dfs(start_id: int = Query(...), target_id: int = Query(...), max_depth: int = Query(4)):
     try:
         return NetworkService.execute_dfs_paths(start_id, target_id, max_depth)
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
+@app.get("/api/network/dfs-traversal")
+def get_dfs_traversal(start_id: int = Query(...)):
+    try:
+        return NetworkService.get_dfs_traversal(start_id)
     except DatabaseConnectionError as err:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
 

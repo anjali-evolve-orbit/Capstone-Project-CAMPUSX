@@ -223,6 +223,12 @@ class CampusXAPIClient:
     def get_clusters(self) -> List[Dict[str, Any]]:
         return self._request("GET", "/api/network/clusters")
 
+    def get_bfs_traversal(self, start_id: int) -> List[Dict[str, Any]]:
+        return self._request("GET", "/api/network/bfs-traversal", params={"start_id": start_id})
+
+    def get_dfs_traversal(self, start_id: int) -> List[Dict[str, Any]]:
+        return self._request("GET", "/api/network/dfs-traversal", params={"start_id": start_id})
+
     # --- Recommendations ---
     def get_recommendations(
         self,

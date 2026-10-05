@@ -146,6 +146,24 @@ class ResearchService:
         if existing:
             return ResearchService.get_researcher_detail(existing[0]["id"])
 
+        # Check by email if user_id was not yet set (e.g. seeded researchers)
+        check_email = (email or "").strip().lower()
+        if not check_email:
+            u_check = db.execute_query("SELECT email FROM users WHERE id = %s LIMIT 1;", (user_id,))
+            if u_check:
+                check_email = (u_check[0].get("email") or "").strip().lower()
+
+        if check_email:
+            existing_email = db.execute_query(
+                "SELECT id, user_id FROM researchers WHERE LOWER(email) = LOWER(%s) LIMIT 1;",
+                (check_email,)
+            )
+            if existing_email:
+                rid = existing_email[0]["id"]
+                if existing_email[0].get("user_id") is None:
+                    db.execute_non_query("UPDATE researchers SET user_id = %s WHERE id = %s;", (user_id, rid))
+                return ResearchService.get_researcher_detail(rid)
+
         user = db.execute_query(
             """
             SELECT u.id, u.full_name, u.email, u.role, u.institution_id, u.department_id,
@@ -355,8 +373,13 @@ class ResearchService:
             where_clause = "LOWER(name) LIKE LOWER(%s)"
             params.append(term)
 
+        try:
+            limit_val = int(getattr(limit, "default", limit))
+        except Exception:
+            limit_val = 50
+
         sql = f"SELECT id, name FROM skills WHERE {where_clause} ORDER BY name ASC LIMIT %s;"
-        params.append(limit)
+        params.append(limit_val)
         return db.execute_query(sql, tuple(params))
 
     @staticmethod

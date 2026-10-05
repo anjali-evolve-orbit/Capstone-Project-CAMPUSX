@@ -6,6 +6,7 @@ Researcher Profile: Detailed Biography, Publications, Areas, and Collaboration N
 import customtkinter as ctk
 from typing import Any, Callable, Dict, Optional
 from api_client.client import api_client
+from services.research_service import ResearchService
 from ui.theme import (
     Theme,
     create_card,
@@ -43,11 +44,31 @@ class ResearcherProfileView(ctk.CTkScrollableFrame):
         self._load_profile()
         self._build_ui()
 
+    def _is_editable(self, p: Optional[Dict[str, Any]] = None) -> bool:
+        """Verify whether the current user is allowed to edit this researcher profile."""
+        if not self.current_user:
+            return False
+        prof = p if p is not None else self.profile
+        if not prof:
+            return False
+        curr_uid = self.current_user.get("id")
+        prof_uid = prof.get("user_id")
+        if curr_uid is not None and prof_uid is not None and int(curr_uid) == int(prof_uid):
+            return True
+        curr_email = (self.current_user.get("email") or "").strip().lower()
+        prof_email = (prof.get("email") or "").strip().lower()
+        if curr_email and prof_email and curr_email == prof_email:
+            return True
+        return False
+
     def _load_profile(self):
         try:
             self.profile = api_client.get_researcher_detail(self.researcher_id)
         except Exception:
-            self.profile = None
+            try:
+                self.profile = ResearchService.get_researcher_detail(self.researcher_id)
+            except Exception:
+                self.profile = None
 
     def _build_ui(self):
         # Back Button Row
@@ -145,7 +166,7 @@ class ResearcherProfileView(ctk.CTkScrollableFrame):
         metrics_col = ctk.CTkFrame(h_inner, fg_color="transparent")
         metrics_col.pack(side="right", padx=(10, 0))
 
-        if self.current_user and p.get("user_id") and self.current_user.get("id") == p.get("user_id"):
+        if self._is_editable(p):
             edit_header_btn = create_primary_button(metrics_col, text="Edit Profile", command=self._open_edit_profile, width=140, height=34)
             edit_header_btn.pack(pady=(0, 8))
 
@@ -195,7 +216,7 @@ class ResearcherProfileView(ctk.CTkScrollableFrame):
             ).pack(anchor="w")
         else:
             ctk.CTkLabel(about_inner, text="No bio added yet.", font=Theme.FONT_BODY, text_color=Theme.SECONDARY_TEXT).pack(anchor="w")
-            if self.current_user and p.get("user_id") and self.current_user.get("id") == p.get("user_id"):
+            if self._is_editable(p):
                 create_secondary_button(about_inner, text="Add Bio", command=self._open_edit_profile, width=100, height=28).pack(anchor="w", pady=(8, 0))
 
         # Right: Research Areas
@@ -219,7 +240,7 @@ class ResearcherProfileView(ctk.CTkScrollableFrame):
                 badge.pack(anchor="w", pady=3)
         else:
             ctk.CTkLabel(areas_inner, text="No research areas added yet.", font=Theme.FONT_BODY, text_color=Theme.SECONDARY_TEXT).pack(anchor="w")
-            if self.current_user and p.get("user_id") and self.current_user.get("id") == p.get("user_id"):
+            if self._is_editable(p):
                 create_secondary_button(areas_inner, text="Add Research Areas", command=self._open_edit_areas, width=150, height=28).pack(anchor="w", pady=(8, 0))
 
         # Skills (distinct from Research Areas)
@@ -233,15 +254,10 @@ class ResearcherProfileView(ctk.CTkScrollableFrame):
                 sb.pack(anchor="w", pady=3)
         else:
             ctk.CTkLabel(self._skills_container, text="No skills added yet.", font=Theme.FONT_BODY, text_color=Theme.SECONDARY_TEXT).pack(anchor="w")
-            if self.current_user and p.get("user_id") and self.current_user.get("id") == p.get("user_id"):
+            if self._is_editable(p):
                 create_secondary_button(self._skills_container, text="Add Skills", command=self._open_skills_editor, width=120, height=28).pack(anchor="w", pady=(8, 0))
 
-        editable = False
-        try:
-            editable = bool(self.current_user and p.get("user_id") and self.current_user.get("id") == p.get("user_id"))
-        except Exception:
-            editable = False
-        if editable:
+        if self._is_editable(p):
             profile_actions = ctk.CTkFrame(areas_inner, fg_color="transparent")
             profile_actions.pack(anchor="e", pady=(6, 0))
 
@@ -272,14 +288,14 @@ class ResearcherProfileView(ctk.CTkScrollableFrame):
             text_color=Theme.NAVY
         ).pack(anchor="w", pady=(0, 12))
 
-        if self.current_user and p.get("user_id") and self.current_user.get("id") == p.get("user_id"):
+        if self._is_editable(p):
             btn_row = ctk.CTkFrame(pub_inner, fg_color="transparent")
             btn_row.pack(anchor="e", pady=(0, 10))
             create_primary_button(btn_row, text="+ Add Paper", command=self._open_add_paper, width=120, height=30).pack(side="right")
 
         if not pubs:
             ctk.CTkLabel(pub_inner, text="No publications added yet.", font=Theme.FONT_BODY, text_color=Theme.SECONDARY_TEXT).pack(anchor="w")
-            if self.current_user and p.get("user_id") and self.current_user.get("id") == p.get("user_id"):
+            if self._is_editable(p):
                 create_secondary_button(pub_inner, text="Add Paper", command=self._open_add_paper, width=120, height=28).pack(anchor="w", pady=(10, 0))
         else:
             for paper in pubs:
@@ -393,6 +409,8 @@ class ResearcherProfileView(ctk.CTkScrollableFrame):
                 prof_btn.pack(anchor="w")
 
     def _refresh_profile(self):
+        if not self.winfo_exists():
+            return
         for w in self.winfo_children():
             try:
                 w.destroy()
@@ -401,197 +419,326 @@ class ResearcherProfileView(ctk.CTkScrollableFrame):
         self._load_profile()
         self._build_ui()
 
+    def _setup_dialog(self, win: ctk.CTkToplevel, title: str, width: int, height: int):
+        """Configure popup dialog to open in front of CAMPUSX main window with correct lifecycle."""
+        win.title(f"{title} — CAMPUSX")
+        win.configure(fg_color=Theme.WHITE)
+        try:
+            parent_win = self.winfo_toplevel()
+            win.transient(parent_win)
+        except Exception:
+            pass
+        win.lift()
+        win.focus_force()
+        win.attributes("-topmost", True)
+        win.after(250, lambda: win.attributes("-topmost", False) if win.winfo_exists() else None)
+
+        win.update_idletasks()
+        try:
+            parent_win = self.winfo_toplevel()
+            px = parent_win.winfo_rootx()
+            py = parent_win.winfo_rooty()
+            pw = parent_win.winfo_width()
+            ph = parent_win.winfo_height()
+            x = px + max(0, (pw - width) // 2)
+            y = py + max(0, (ph - height) // 2)
+        except Exception:
+            sw = win.winfo_screenwidth()
+            sh = win.winfo_screenheight()
+            x = max(0, (sw - width) // 2)
+            y = max(0, (sh - height) // 2)
+        win.geometry(f"{width}x{height}+{x}+{y}")
+
     def _open_edit_profile(self):
         if not self.profile:
             return
         win = ctk.CTkToplevel(self)
-        win.title("Edit Profile")
-        win.geometry("620x500")
+        self._setup_dialog(win, "Edit Profile", 640, 590)
 
-        frame = ctk.CTkFrame(win, fg_color="transparent")
-        frame.pack(fill="both", expand=True, padx=14, pady=14)
+        scroll = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=20, pady=16)
 
-        ctk.CTkLabel(frame, text="Full Name", font=Theme.FONT_BODY_BOLD).pack(anchor="w", pady=(2, 2))
-        name_entry = ctk.CTkEntry(frame, width=560)
+        ctk.CTkLabel(scroll, text="Edit Profile", font=Theme.FONT_TITLE, text_color=Theme.NAVY).pack(anchor="w", pady=(0, 4))
+        ctk.CTkLabel(scroll, text="Update your personal details, academic affiliation, and bio:", font=Theme.FONT_CAPTION, text_color=Theme.SECONDARY_TEXT).pack(anchor="w", pady=(0, 14))
+
+        # Full Name
+        ctk.CTkLabel(scroll, text="Full Name *", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
+        name_entry = ctk.CTkEntry(scroll, width=560, height=34)
         name_entry.insert(0, self.profile.get("name", ""))
-        name_entry.pack(anchor="w", pady=(0, 8))
+        name_entry.pack(anchor="w", pady=(0, 10))
 
-        ctk.CTkLabel(frame, text="Designation", font=Theme.FONT_BODY_BOLD).pack(anchor="w", pady=(2, 2))
-        designation_entry = ctk.CTkEntry(frame, width=560)
+        # Designation
+        ctk.CTkLabel(scroll, text="Designation *", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
+        designation_entry = ctk.CTkEntry(scroll, width=560, height=34)
         designation_entry.insert(0, self.profile.get("designation", ""))
-        designation_entry.pack(anchor="w", pady=(0, 8))
+        designation_entry.pack(anchor="w", pady=(0, 10))
 
+        # Institution
         institution_options = []
         try:
             institution_options = api_client.get_institutions()
         except Exception:
             institution_options = []
-        institution_names = [item.get("name") for item in institution_options if item.get("name")]
-        institution_map = {item.get("name"): item.get("id") for item in institution_options if item.get("name")}
-        current_inst_name = self.profile.get("institution_name") or ""
-        selected_institution = ctk.StringVar(value=current_inst_name if current_inst_name in institution_map else (institution_names[0] if institution_names else ""))
-        ctk.CTkLabel(frame, text="Institution", font=Theme.FONT_BODY_BOLD).pack(anchor="w", pady=(2, 2))
-        institution_menu = ctk.CTkOptionMenu(frame, variable=selected_institution, values=institution_names, width=560)
-        institution_menu.pack(anchor="w", pady=(0, 8))
+        institution_names = [item["name"] for item in institution_options if item.get("name")]
+        institution_map = {item["name"]: item["id"] for item in institution_options if item.get("name")}
+        curr_inst = self.profile.get("institution_name") or (institution_names[0] if institution_names else "")
+        selected_inst_var = ctk.StringVar(value=curr_inst if curr_inst in institution_map else (institution_names[0] if institution_names else ""))
 
-        department_options = []
+        ctk.CTkLabel(scroll, text="Institution", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
+        institution_menu = ctk.CTkOptionMenu(
+            scroll,
+            variable=selected_inst_var,
+            values=institution_names if institution_names else ["No institutions available"],
+            width=560,
+            height=34,
+            fg_color=Theme.ACADEMIC_BLUE
+        )
+        institution_menu.pack(anchor="w", pady=(0, 10))
+
+        # Department
+        dept_map = {}
+        curr_inst_id = institution_map.get(selected_inst_var.get())
+        dept_opts = []
         try:
-            department_options = api_client.get_departments(self.profile.get("institution_id")) if self.profile.get("institution_id") else []
+            dept_opts = api_client.get_departments(curr_inst_id) if curr_inst_id else []
         except Exception:
-            department_options = []
-        department_names = [item.get("name") for item in department_options if item.get("name")]
-        department_map = {item.get("name"): item.get("id") for item in department_options if item.get("name")}
-        current_dept_name = self.profile.get("department_name") or ""
-        selected_department = ctk.StringVar(value=current_dept_name if current_dept_name in department_map else (department_names[0] if department_names else ""))
-        ctk.CTkLabel(frame, text="Department", font=Theme.FONT_BODY_BOLD).pack(anchor="w", pady=(2, 2))
-        department_menu = ctk.CTkOptionMenu(frame, variable=selected_department, values=department_names, width=560)
-        department_menu.pack(anchor="w", pady=(0, 8))
+            dept_opts = []
+        dept_names = [d["name"] for d in dept_opts if d.get("name")]
+        for d in dept_opts:
+            if d.get("name"):
+                dept_map[d["name"]] = d["id"]
+        curr_dept = self.profile.get("department_name") or (dept_names[0] if dept_names else "")
+        selected_dept_var = ctk.StringVar(value=curr_dept if curr_dept in dept_map else (dept_names[0] if dept_names else ""))
 
-        ctk.CTkLabel(frame, text="Email (read-only)", font=Theme.FONT_BODY_BOLD).pack(anchor="w", pady=(2, 2))
-        email_entry = ctk.CTkEntry(frame, width=560)
-        email_entry.insert(0, self.profile.get("email", ""))
+        ctk.CTkLabel(scroll, text="Department / Program", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
+        department_menu = ctk.CTkOptionMenu(
+            scroll,
+            variable=selected_dept_var,
+            values=dept_names if dept_names else ["No departments available"],
+            width=560,
+            height=34,
+            fg_color=Theme.ACADEMIC_BLUE
+        )
+        department_menu.pack(anchor="w", pady=(0, 10))
+
+        def _on_inst_changed(chosen_inst):
+            inst_id = institution_map.get(chosen_inst)
+            try:
+                new_depts = api_client.get_departments(inst_id) if inst_id else []
+            except Exception:
+                new_depts = []
+            dept_map.clear()
+            new_names = [d["name"] for d in new_depts if d.get("name")]
+            for d in new_depts:
+                if d.get("name"):
+                    dept_map[d["name"]] = d["id"]
+            if new_names:
+                department_menu.configure(values=new_names)
+                selected_dept_var.set(new_names[0])
+            else:
+                department_menu.configure(values=["No departments available"])
+                selected_dept_var.set("No departments available")
+
+        institution_menu.configure(command=_on_inst_changed)
+
+        # Email (READ ONLY)
+        ctk.CTkLabel(scroll, text="Email (Read Only)", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
+        email_entry = ctk.CTkEntry(scroll, width=560, height=34, fg_color="#F1F5F9", text_color=Theme.SECONDARY_TEXT)
+        email_entry.insert(0, self.profile.get("email") or "Not registered")
         email_entry.configure(state="disabled")
-        email_entry.pack(anchor="w", pady=(0, 8))
+        email_entry.pack(anchor="w", pady=(0, 10))
 
-        ctk.CTkLabel(frame, text="Website", font=Theme.FONT_BODY_BOLD).pack(anchor="w", pady=(2, 2))
-        website_entry = ctk.CTkEntry(frame, width=560)
-        website_entry.insert(0, self.profile.get("website", ""))
-        website_entry.pack(anchor="w", pady=(0, 8))
+        # Website
+        ctk.CTkLabel(scroll, text="Website URL", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
+        website_entry = ctk.CTkEntry(scroll, width=560, height=34)
+        website_entry.insert(0, self.profile.get("website") or "")
+        website_entry.pack(anchor="w", pady=(0, 10))
 
-        ctk.CTkLabel(frame, text="Bio", font=Theme.FONT_BODY_BOLD).pack(anchor="w", pady=(2, 2))
-        bio_box = ctk.CTkTextbox(frame, width=560, height=110)
-        bio_box.insert("1.0", self.profile.get("bio", ""))
-        bio_box.pack(anchor="w", pady=(0, 10))
+        # Bio
+        ctk.CTkLabel(scroll, text="Biography", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
+        bio_box = ctk.CTkTextbox(scroll, width=560, height=100)
+        bio_box.insert("1.0", self.profile.get("bio") or "")
+        bio_box.pack(anchor="w", pady=(0, 12))
 
-        status = ctk.CTkLabel(frame, text="", font=Theme.FONT_BODY, text_color=Theme.SUCCESS)
-        status.pack(anchor="w", pady=(0, 8))
+        # Status Label
+        status_lbl = ctk.CTkLabel(scroll, text="", font=Theme.FONT_BODY, text_color=Theme.DANGER)
+        status_lbl.pack(anchor="w", pady=(0, 10))
+
+        # Buttons
+        action_row = ctk.CTkFrame(scroll, fg_color="transparent")
+        action_row.pack(fill="x", pady=(8, 12))
 
         def _save():
-            institution_id = institution_map.get(selected_institution.get()) if selected_institution.get() in institution_map else self.profile.get("institution_id")
-            department_id = department_map.get(selected_department.get()) if selected_department.get() in department_map else self.profile.get("department_id")
-            payload = {
-                "name": name_entry.get().strip(),
-                "designation": designation_entry.get().strip(),
-                "institution_id": institution_id,
-                "department_id": department_id,
-                "bio": bio_box.get("1.0", "end").strip() or None,
-                "website": website_entry.get().strip() or None
-            }
-            if not payload["name"]:
-                status.configure(text="Name is required.", text_color=Theme.DANGER)
+            if not win.winfo_exists():
                 return
+            name_val = name_entry.get().strip()
+            if not name_val:
+                status_lbl.configure(text="Full Name is required.", text_color=Theme.DANGER)
+                return
+            desig_val = designation_entry.get().strip()
+            if not desig_val:
+                status_lbl.configure(text="Designation is required.", text_color=Theme.DANGER)
+                return
+
+            inst_id = institution_map.get(selected_inst_var.get())
+            dept_id = dept_map.get(selected_dept_var.get())
+            bio_val = bio_box.get("1.0", "end").strip() or None
+            web_val = website_entry.get().strip() or None
+
+            payload = {
+                "name": name_val,
+                "designation": desig_val,
+                "institution_id": inst_id,
+                "department_id": dept_id,
+                "bio": bio_val,
+                "website": web_val
+            }
             try:
                 api_client.update_researcher_profile(self.researcher_id, payload)
-                status.configure(text="Profile saved.", text_color=Theme.SUCCESS)
                 win.destroy()
-                self._refresh_profile()
+                if self.winfo_exists():
+                    self._refresh_profile()
             except Exception as exc:
-                status.configure(text=str(exc), text_color=Theme.DANGER)
+                if win.winfo_exists():
+                    status_lbl.configure(text=f"Save failed: {exc}", text_color=Theme.DANGER)
 
-        action_row = ctk.CTkFrame(frame, fg_color="transparent")
-        action_row.pack(fill="x", pady=(12, 0))
-        ctk.CTkButton(action_row, text="Cancel", command=win.destroy, fg_color="transparent", text_color=Theme.SECONDARY_TEXT, width=110).pack(side="left")
-        create_primary_button(action_row, text="Save Changes", command=_save, width=150).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(
+            action_row,
+            text="Cancel",
+            command=win.destroy,
+            fg_color="transparent",
+            hover_color=Theme.MUTED_BG,
+            text_color=Theme.SECONDARY_TEXT,
+            width=110,
+            height=34
+        ).pack(side="left")
+
+        create_primary_button(
+            action_row,
+            text="Save Changes",
+            command=_save,
+            width=150,
+            height=34
+        ).pack(side="right")
 
     def _open_edit_areas(self):
         if not self.profile:
             return
         win = ctk.CTkToplevel(self)
-        win.title("Edit Research Areas")
-        win.geometry("500x420")
+        self._setup_dialog(win, "Edit Research Areas", 520, 520)
 
-        frame = ctk.CTkFrame(win, fg_color="transparent")
-        frame.pack(fill="both", expand=True, padx=14, pady=14)
+        container = ctk.CTkFrame(win, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=20, pady=16)
 
-        ctk.CTkLabel(frame, text="Select your research areas", font=Theme.FONT_SUBTITLE, text_color=Theme.NAVY).pack(anchor="w", pady=(0, 8))
+        ctk.CTkLabel(container, text="Edit Research Areas", font=Theme.FONT_TITLE, text_color=Theme.NAVY).pack(anchor="w", pady=(0, 4))
+        ctk.CTkLabel(container, text="Select or unselect the academic fields for this profile:", font=Theme.FONT_CAPTION, text_color=Theme.SECONDARY_TEXT).pack(anchor="w", pady=(0, 12))
+
         current_ids = {a.get("id") for a in self.profile.get("areas", []) if a.get("id") is not None}
 
-        area_frame = ctk.CTkScrollableFrame(frame, fg_color="transparent")
-        area_frame.pack(fill="both", expand=True)
+        area_frame = ctk.CTkScrollableFrame(container, fg_color="transparent", height=300)
+        area_frame.pack(fill="both", expand=True, pady=(0, 10))
 
         try:
             area_rows = api_client.get_research_areas()
         except Exception as exc:
             area_rows = []
-            ctk.CTkLabel(frame, text=f"Unable to load research areas: {exc}", font=Theme.FONT_BODY, text_color=Theme.DANGER).pack(anchor="w", pady=8)
+            ctk.CTkLabel(area_frame, text=f"Unable to load research areas: {exc}", font=Theme.FONT_BODY, text_color=Theme.DANGER).pack(anchor="w", pady=8)
 
-        selected = {}
+        selected_vars = {}
         for area in area_rows:
             area_id = area.get("id")
             var = ctk.BooleanVar(value=(area_id in current_ids))
+            selected_vars[area_id] = var
             cb = ctk.CTkCheckBox(
                 area_frame,
-                text=area.get("name", "Untitled area"),
+                text=area.get("name", "Untitled Area"),
                 variable=var,
                 font=Theme.FONT_BODY,
                 text_color=Theme.DARK_TEXT,
-                checkbox_width=18,
-                checkbox_height=18,
+                checkbox_width=20,
+                checkbox_height=20,
                 fg_color=Theme.ACADEMIC_BLUE
             )
-            cb.pack(anchor="w", pady=3)
-            selected[area_id] = var
+            cb.pack(anchor="w", pady=4)
 
-        status = ctk.CTkLabel(frame, text="", font=Theme.FONT_BODY, text_color=Theme.SUCCESS)
-        status.pack(anchor="w", pady=(10, 6))
+        status_lbl = ctk.CTkLabel(container, text="", font=Theme.FONT_BODY, text_color=Theme.DANGER)
+        status_lbl.pack(anchor="w", pady=(2, 6))
 
-        def _save():
-            chosen = [area_id for area_id, var in selected.items() if var.get() and area_id is not None]
+        action_row = ctk.CTkFrame(container, fg_color="transparent")
+        action_row.pack(fill="x", pady=(6, 0))
+
+        def _save_areas():
+            if not win.winfo_exists():
+                return
+            chosen = [aid for aid, var in selected_vars.items() if var.get() and aid is not None]
             try:
                 api_client.update_researcher_areas(self.researcher_id, chosen)
-                status.configure(text="Research areas updated.", text_color=Theme.SUCCESS)
                 win.destroy()
-                self._refresh_profile()
+                if self.winfo_exists():
+                    self._refresh_profile()
             except Exception as exc:
-                status.configure(text=str(exc), text_color=Theme.DANGER)
+                if win.winfo_exists():
+                    status_lbl.configure(text=f"Save failed: {exc}", text_color=Theme.DANGER)
 
-        action_row = ctk.CTkFrame(frame, fg_color="transparent")
-        action_row.pack(anchor="w")
-        create_primary_button(action_row, text="Save Areas", command=_save, width=120).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(action_row, text="Cancel", command=win.destroy, fg_color="transparent", text_color=Theme.SECONDARY_TEXT).pack(side="left")
+        ctk.CTkButton(
+            action_row,
+            text="Cancel",
+            command=win.destroy,
+            fg_color="transparent",
+            hover_color=Theme.MUTED_BG,
+            text_color=Theme.SECONDARY_TEXT,
+            width=110,
+            height=34
+        ).pack(side="left")
+
+        create_primary_button(
+            action_row,
+            text="Save Areas",
+            command=_save_areas,
+            width=140,
+            height=34
+        ).pack(side="right")
 
     def _toggle_edit_skills(self):
         self._open_skills_editor()
+
+    _open_edit_skills = _toggle_edit_skills
 
     def _open_skills_editor(self):
         if not self.profile:
             return
 
         win = ctk.CTkToplevel(self)
-        win.title("Edit Skills")
-        win.geometry("560x520")
-        win.minsize(520, 440)
+        self._setup_dialog(win, "Edit Skills", 600, 600)
 
-        frm = ctk.CTkFrame(win, fg_color="transparent")
-        frm.pack(fill="both", expand=True, padx=14, pady=14)
+        container = ctk.CTkFrame(win, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=20, pady=16)
 
-        ctk.CTkLabel(frm, text="Edit Skills", font=Theme.FONT_SUBTITLE, text_color=Theme.NAVY).pack(anchor="w", pady=(0, 8))
+        ctk.CTkLabel(container, text="Edit Skills", font=Theme.FONT_TITLE, text_color=Theme.NAVY).pack(anchor="w", pady=(0, 4))
+        ctk.CTkLabel(
+            container,
+            text="Search and select multiple skills. Selected skills appear as removable badges below:",
+            font=Theme.FONT_CAPTION,
+            text_color=Theme.SECONDARY_TEXT
+        ).pack(anchor="w", pady=(0, 10))
 
-        search_var = ctk.StringVar(value="")
-        search_entry = ctk.CTkEntry(frm, width=520, placeholder_text="Search skills")
-        search_entry.pack(fill="x", pady=(0, 8))
-
+        # Selected skills state management
         selected_lookup = {}
         selected_order = []
-        for skill in self.profile.get("skills", []):
-            name = str(skill.get("name") or skill).strip()
-            if not name:
-                continue
-            key = name.lower()
-            if key not in selected_lookup:
-                selected_lookup[key] = name
-                selected_order.append(name)
+        for s in self.profile.get("skills", []):
+            name = str(s.get("name") if isinstance(s, dict) else s).strip()
+            if name:
+                key = name.lower()
+                if key not in selected_lookup:
+                    selected_lookup[key] = name
+                    selected_order.append(name)
 
-        suggestion_frame = ctk.CTkScrollableFrame(frm, fg_color="transparent", height=150)
-        suggestion_frame.pack(fill="x", pady=(0, 10))
+        # 1. Selected Skills Chips Container
+        ctk.CTkLabel(container, text="Selected Skills", font=Theme.FONT_BODY_BOLD, text_color=Theme.NAVY).pack(anchor="w", pady=(4, 4))
+        selected_chips_frame = ctk.CTkScrollableFrame(container, fg_color="#F8FAFC", corner_radius=8, height=90)
+        selected_chips_frame.pack(fill="x", pady=(0, 12))
 
-        selected_frame = ctk.CTkFrame(frm, fg_color="transparent")
-        selected_frame.pack(fill="x", pady=(0, 10))
-
-        status = ctk.CTkLabel(frm, text="", font=Theme.FONT_BODY, text_color=Theme.SUCCESS)
-        status.pack(anchor="w", pady=(0, 8))
-
-        def add_selected_skill(name: str):
+        def add_skill(name: str):
             clean = (name or "").strip()
             if not clean:
                 return
@@ -599,222 +746,326 @@ class ResearcherProfileView(ctk.CTkScrollableFrame):
             if key not in selected_lookup:
                 selected_lookup[key] = clean
                 selected_order.append(clean)
-                refresh_selected_skills()
+                refresh_selected_chips()
                 refresh_suggestions()
 
-        def remove_selected_skill(name: str):
+        def remove_skill(name: str):
             clean = (name or "").strip()
             key = clean.lower()
             if key in selected_lookup:
                 del selected_lookup[key]
                 selected_order[:] = [n for n in selected_order if n.lower() != key]
-                refresh_selected_skills()
+                refresh_selected_chips()
                 refresh_suggestions()
 
-        def refresh_selected_skills():
-            for child in selected_frame.winfo_children():
-                child.destroy()
+        def refresh_selected_chips():
+            if not win.winfo_exists() or not selected_chips_frame.winfo_exists():
+                return
+            for child in selected_chips_frame.winfo_children():
+                try:
+                    child.destroy()
+                except Exception:
+                    pass
 
             if not selected_order:
-                ctk.CTkLabel(selected_frame, text="No skills selected yet.", font=Theme.FONT_BODY, text_color=Theme.SECONDARY_TEXT).pack(anchor="w")
+                ctk.CTkLabel(
+                    selected_chips_frame,
+                    text="No skills selected yet. Search below to add skills.",
+                    font=Theme.FONT_CAPTION,
+                    text_color=Theme.SECONDARY_TEXT
+                ).pack(anchor="w", padx=8, pady=10)
                 return
 
-            chip_container = ctk.CTkFrame(selected_frame, fg_color="transparent")
-            chip_container.pack(anchor="w")
+            flow_box = ctk.CTkFrame(selected_chips_frame, fg_color="transparent")
+            flow_box.pack(fill="x", padx=4, pady=4)
+
             for name in selected_order:
-                chip = ctk.CTkFrame(chip_container, fg_color="#EEF2FF", corner_radius=14)
-                chip.pack(side="left", padx=(0, 6), pady=2)
-                ctk.CTkLabel(chip, text=f"  {name} ", font=Theme.FONT_CAPTION, text_color=Theme.ACADEMIC_BLUE).pack(side="left", padx=(8, 0), pady=4)
+                chip = ctk.CTkFrame(flow_box, fg_color="#EEF2FF", corner_radius=14)
+                chip.pack(side="left", padx=4, pady=4)
+
+                ctk.CTkLabel(
+                    chip,
+                    text=f" {name} ",
+                    font=Theme.FONT_BODY,
+                    text_color=Theme.ACADEMIC_BLUE
+                ).pack(side="left", padx=(8, 2), pady=3)
+
                 ctk.CTkButton(
                     chip,
                     text="✕",
-                    width=20,
-                    height=20,
+                    width=22,
+                    height=22,
                     fg_color="transparent",
-                    hover_color="#DDE7FF",
-                    text_color=Theme.ACADEMIC_BLUE,
-                    command=lambda n=name: remove_selected_skill(n)
-                ).pack(side="left", padx=(4, 8), pady=4)
+                    hover_color="#DBEAFE",
+                    text_color=Theme.DANGER,
+                    font=("Segoe UI", 11, "bold"),
+                    command=lambda n=name: remove_skill(n)
+                ).pack(side="left", padx=(2, 6), pady=3)
+
+        # 2. Search Skills Input
+        ctk.CTkLabel(container, text="Search Skills", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
+        search_entry = ctk.CTkEntry(container, width=560, height=36, placeholder_text="Search skills (e.g. Python, MySQL, FastAPI)...")
+        search_entry.pack(fill="x", pady=(0, 10))
+
+        # 3. Available Skills / Suggestions Frame
+        ctk.CTkLabel(container, text="Available Skills (click to toggle)", font=Theme.FONT_CAPTION, text_color=Theme.SECONDARY_TEXT).pack(anchor="w", pady=(0, 4))
+        suggestion_frame = ctk.CTkScrollableFrame(container, fg_color="transparent", height=180)
+        suggestion_frame.pack(fill="both", expand=True, pady=(0, 10))
+
+        status_lbl = ctk.CTkLabel(container, text="", font=Theme.FONT_BODY, text_color=Theme.DANGER)
+        status_lbl.pack(anchor="w", pady=(0, 6))
 
         def refresh_suggestions():
+            if not win.winfo_exists() or not suggestion_frame.winfo_exists():
+                return
             for child in suggestion_frame.winfo_children():
-                child.destroy()
+                try:
+                    child.destroy()
+                except Exception:
+                    pass
 
-            query = search_var.get().strip()
+            query = search_entry.get().strip()
             try:
-                matches = api_client.get_skills(query, limit=20)
+                matches = api_client.get_skills(query=query if query else None, limit=50)
             except Exception:
                 matches = []
 
-            # Show a helpful custom add action when the search does not match an existing skill.
             normalized_matches = [str(item.get("name") or "").strip() for item in matches if str(item.get("name") or "").strip()]
-            match_names = {name.lower(): name for name in normalized_matches}
+            match_map = {m.lower(): m for m in normalized_matches}
 
-            if not normalized_matches:
-                if query:
-                    no_match = ctk.CTkLabel(suggestion_frame, text='No matching skill found.', font=Theme.FONT_BODY, text_color=Theme.SECONDARY_TEXT)
-                    no_match.pack(anchor="w", pady=(4, 6))
-                    add_custom = create_primary_button(
-                        suggestion_frame,
-                        text=f'+ Add "{query}"',
-                        command=lambda: add_selected_skill(query),
-                        width=180,
-                        height=28
-                    )
-                    add_custom.pack(anchor="w", pady=(0, 6))
-                else:
-                    ctk.CTkLabel(suggestion_frame, text="Start typing to find skills.", font=Theme.FONT_BODY, text_color=Theme.SECONDARY_TEXT).pack(anchor="w", pady=8)
+            if not normalized_matches and not query:
+                ctk.CTkLabel(suggestion_frame, text="Type above to search across available skills.", font=Theme.FONT_CAPTION, text_color=Theme.SECONDARY_TEXT).pack(anchor="w", pady=12)
+                return
+
+            if not normalized_matches and query:
+                no_res = ctk.CTkLabel(suggestion_frame, text=f'No existing skills found matching "{query}".', font=Theme.FONT_BODY, text_color=Theme.SECONDARY_TEXT)
+                no_res.pack(anchor="w", pady=(6, 4))
+                add_btn = create_primary_button(
+                    suggestion_frame,
+                    text=f'+ Add "{query}" to Skills',
+                    command=lambda q=query: (add_skill(q), search_entry.delete(0, "end"), refresh_suggestions()),
+                    width=200,
+                    height=30
+                )
+                add_btn.pack(anchor="w", pady=(0, 8))
                 return
 
             for skill_name in normalized_matches:
-                selected = skill_name.lower() in selected_lookup
-                cb = ctk.CTkCheckBox(
-                    suggestion_frame,
-                    text=skill_name,
-                    variable=ctk.BooleanVar(value=selected),
-                    command=lambda n=skill_name: (add_selected_skill(n) if n.lower() not in selected_lookup else remove_selected_skill(n)),
-                    checkbox_width=18,
-                    checkbox_height=18,
-                    fg_color=Theme.ACADEMIC_BLUE,
-                    text_color=Theme.DARK_TEXT,
-                    font=Theme.FONT_BODY
-                )
-                cb.pack(anchor="w", pady=3)
+                is_selected = skill_name.lower() in selected_lookup
+                row = ctk.CTkFrame(suggestion_frame, fg_color="#F8FAFC" if not is_selected else "#EEF2FF", corner_radius=6)
+                row.pack(fill="x", pady=2)
 
-            if query and query.lower() not in match_names:
-                add_custom = create_primary_button(
-                    suggestion_frame,
-                    text=f'+ Add "{query}"',
-                    command=lambda: add_selected_skill(query),
-                    width=180,
-                    height=28
+                s_lbl = ctk.CTkLabel(
+                    row,
+                    text=f"  {skill_name}",
+                    font=Theme.FONT_BODY_BOLD if is_selected else Theme.FONT_BODY,
+                    text_color=Theme.ACADEMIC_BLUE if is_selected else Theme.DARK_TEXT
                 )
-                add_custom.pack(anchor="w", pady=(8, 0))
+                s_lbl.pack(side="left", padx=8, pady=6)
 
-        search_entry.bind("<KeyRelease>", lambda _event: refresh_suggestions())
-        refresh_selected_skills()
+                if is_selected:
+                    rem_btn = ctk.CTkButton(
+                        row,
+                        text="✓ Added (Remove)",
+                        width=110,
+                        height=26,
+                        fg_color="#DBEAFE",
+                        hover_color="#BFDBFE",
+                        text_color=Theme.ACADEMIC_BLUE,
+                        font=Theme.FONT_CAPTION,
+                        command=lambda n=skill_name: remove_skill(n)
+                    )
+                    rem_btn.pack(side="right", padx=8, pady=4)
+                else:
+                    add_row_btn = ctk.CTkButton(
+                        row,
+                        text="+ Add",
+                        width=70,
+                        height=26,
+                        fg_color=Theme.ACADEMIC_BLUE,
+                        hover_color="#173D6E",
+                        text_color=Theme.WHITE,
+                        font=Theme.FONT_CAPTION,
+                        command=lambda n=skill_name: add_skill(n)
+                    )
+                    add_row_btn.pack(side="right", padx=8, pady=4)
+
+            # Option to add custom skill if user's search isn't exactly matched
+            if query and query.lower() not in match_map and query.lower() not in selected_lookup:
+                custom_row = ctk.CTkFrame(suggestion_frame, fg_color="transparent")
+                custom_row.pack(fill="x", pady=(8, 4))
+                add_btn = create_primary_button(
+                    custom_row,
+                    text=f'+ Add "{query}" as New Skill',
+                    command=lambda q=query: (add_skill(q), search_entry.delete(0, "end"), refresh_suggestions()),
+                    width=210,
+                    height=30
+                )
+                add_btn.pack(anchor="w")
+
+        def _on_key_release(_event=None):
+            if win.winfo_exists():
+                refresh_suggestions()
+
+        search_entry.bind("<KeyRelease>", _on_key_release)
+        refresh_selected_chips()
         refresh_suggestions()
 
-        btn_row = ctk.CTkFrame(frm, fg_color="transparent")
-        btn_row.pack(fill="x", pady=(12, 0))
+        # Action Buttons Row
+        action_row = ctk.CTkFrame(container, fg_color="transparent")
+        action_row.pack(fill="x", pady=(6, 0))
 
-        def _save():
+        def _save_skills():
+            if not win.winfo_exists():
+                return
             skill_names = list(selected_lookup.values())
             try:
                 api_client.update_researcher_skills(self.researcher_id, skill_names)
-                status.configure(text="Skills saved successfully.", text_color=Theme.SUCCESS)
                 win.destroy()
-                self._refresh_profile()
+                if self.winfo_exists():
+                    self._refresh_profile()
             except Exception as exc:
-                status.configure(text=str(exc), text_color=Theme.DANGER)
+                if win.winfo_exists():
+                    status_lbl.configure(text=f"Save failed: {exc}", text_color=Theme.DANGER)
 
-        ctk.CTkButton(btn_row, text="Cancel", command=win.destroy, fg_color="transparent", text_color=Theme.SECONDARY_TEXT, width=110).pack(side="left")
-        create_primary_button(btn_row, text="Save Skills", command=_save, width=150).pack(side="right")
+        ctk.CTkButton(
+            action_row,
+            text="Cancel",
+            command=win.destroy,
+            fg_color="transparent",
+            hover_color=Theme.MUTED_BG,
+            text_color=Theme.SECONDARY_TEXT,
+            width=110,
+            height=34
+        ).pack(side="left")
+
+        create_primary_button(
+            action_row,
+            text="Save Skills",
+            command=_save_skills,
+            width=140,
+            height=34
+        ).pack(side="right")
 
     def _open_add_paper(self):
         win = ctk.CTkToplevel(self)
-        win.title("Add Paper")
-        win.geometry("640x520")
+        self._setup_dialog(win, "Add Research Paper", 640, 620)
 
-        frm = ctk.CTkFrame(win, fg_color="transparent")
-        frm.pack(fill="both", expand=True, padx=12, pady=12)
+        scroll = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=20, pady=16)
 
-        # Fields: Title, Year, Venue, DOI, Abstract, Primary Area
-        ctk.CTkLabel(frm, text="Title", font=Theme.FONT_BODY_BOLD).pack(anchor="w", pady=(2, 2))
-        title_entry = ctk.CTkEntry(frm, width=580)
-        title_entry.pack(pady=(0, 8))
+        ctk.CTkLabel(scroll, text="Add Research Paper", font=Theme.FONT_TITLE, text_color=Theme.NAVY).pack(anchor="w", pady=(0, 4))
+        ctk.CTkLabel(scroll, text="Record an academic paper, conference publication, or journal article:", font=Theme.FONT_CAPTION, text_color=Theme.SECONDARY_TEXT).pack(anchor="w", pady=(0, 14))
 
-        ctk.CTkLabel(frm, text="Publication Year", font=Theme.FONT_BODY_BOLD).pack(anchor="w", pady=(2, 2))
-        year_entry = ctk.CTkEntry(frm, width=200)
-        year_entry.pack(pady=(0, 8))
+        # Title
+        ctk.CTkLabel(scroll, text="Title *", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
+        title_entry = ctk.CTkEntry(scroll, width=560, height=34, placeholder_text="e.g. Scalable Graph Neural Networks for Academic Collaboration")
+        title_entry.pack(anchor="w", pady=(0, 10))
 
-        ctk.CTkLabel(frm, text="Venue / Journal / Conference", font=Theme.FONT_BODY_BOLD).pack(anchor="w", pady=(2, 2))
-        venue_entry = ctk.CTkEntry(frm, width=580)
-        venue_entry.pack(pady=(0, 8))
+        # Publication Year
+        ctk.CTkLabel(scroll, text="Publication Year *", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
+        year_entry = ctk.CTkEntry(scroll, width=200, height=34, placeholder_text="e.g. 2024")
+        year_entry.pack(anchor="w", pady=(0, 10))
 
-        ctk.CTkLabel(frm, text="DOI / URL (optional)", font=Theme.FONT_BODY_BOLD).pack(anchor="w", pady=(2, 2))
-        doi_entry = ctk.CTkEntry(frm, width=580)
-        doi_entry.pack(pady=(0, 8))
+        # Venue / Journal / Conference
+        ctk.CTkLabel(scroll, text="Venue / Journal / Conference", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
+        venue_entry = ctk.CTkEntry(scroll, width=560, height=34, placeholder_text="e.g. IEEE Transactions on Knowledge and Data Engineering")
+        venue_entry.pack(anchor="w", pady=(0, 10))
 
-        ctk.CTkLabel(frm, text="Research Areas (select one or more)", font=Theme.FONT_BODY_BOLD).pack(anchor="w", pady=(2, 2))
-        areas = []
-        selected_area_vars = {}
+        # DOI / URL
+        ctk.CTkLabel(scroll, text="DOI / URL (optional)", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
+        doi_entry = ctk.CTkEntry(scroll, width=560, height=34, placeholder_text="e.g. 10.1109/TKDE.2024.10452 or https://...")
+        doi_entry.pack(anchor="w", pady=(0, 10))
+
+        # Primary Research Area
+        area_options = []
         try:
-            areas = api_client.get_research_areas()
+            area_options = api_client.get_research_areas()
         except Exception:
-            areas = []
+            area_options = []
+        area_names = [a["name"] for a in area_options if a.get("name")]
+        area_map = {a["name"]: a["id"] for a in area_options if a.get("name")}
+        sel_area_var = ctk.StringVar(value=area_names[0] if area_names else "General")
 
-        area_frame = ctk.CTkScrollableFrame(frm, fg_color="transparent", width=560, height=120)
-        area_frame.pack(pady=(0, 8), fill="both")
-        if areas:
-            for area in areas:
-                var = ctk.BooleanVar(value=False)
-                selected_area_vars[area.get("id")] = var
-                ctk.CTkCheckBox(
-                    area_frame,
-                    text=area.get("name", "Untitled area"),
-                    variable=var,
-                    checkbox_width=18,
-                    checkbox_height=18,
-                    fg_color=Theme.ACADEMIC_BLUE,
-                    text_color=Theme.DARK_TEXT,
-                    font=Theme.FONT_BODY
-                ).pack(anchor="w", pady=2)
-        else:
-            ctk.CTkLabel(area_frame, text="No research areas are available yet.", font=Theme.FONT_BODY, text_color=Theme.SECONDARY_TEXT).pack(anchor="w")
+        ctk.CTkLabel(scroll, text="Primary Research Area *", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
+        primary_area_menu = ctk.CTkOptionMenu(
+            scroll,
+            variable=sel_area_var,
+            values=area_names if area_names else ["General"],
+            width=560,
+            height=34,
+            fg_color=Theme.ACADEMIC_BLUE
+        )
+        primary_area_menu.pack(anchor="w", pady=(0, 10))
 
-        ctk.CTkLabel(frm, text="Abstract (optional)", font=Theme.FONT_BODY_BOLD).pack(anchor="w", pady=(2, 2))
-        abstract_box = ctk.CTkTextbox(frm, width=580, height=110)
-        abstract_box.pack(pady=(0, 8))
+        # Abstract
+        ctk.CTkLabel(scroll, text="Abstract", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
+        abstract_box = ctk.CTkTextbox(scroll, width=560, height=110)
+        abstract_box.pack(anchor="w", pady=(0, 12))
 
-        status = ctk.CTkLabel(frm, text="", font=Theme.FONT_BODY)
-        status.pack(pady=(4, 8))
+        status_lbl = ctk.CTkLabel(scroll, text="", font=Theme.FONT_BODY, text_color=Theme.DANGER)
+        status_lbl.pack(anchor="w", pady=(0, 8))
 
-        btn_row = ctk.CTkFrame(frm, fg_color="transparent")
-        btn_row.pack()
+        # Buttons
+        action_row = ctk.CTkFrame(scroll, fg_color="transparent")
+        action_row.pack(fill="x", pady=(6, 12))
 
         def _save_paper():
-            title = title_entry.get().strip()
-            year_text = year_entry.get().strip()
-            venue = venue_entry.get().strip() or None
-            doi = doi_entry.get().strip() or None
-            abstract = abstract_box.get("1.0", "end").strip() or None
-            if not title:
-                status.configure(text="Please enter a paper title.", text_color=Theme.DANGER)
+            if not win.winfo_exists():
                 return
-            try:
-                year = int(year_text)
-            except Exception:
-                status.configure(text="Please enter a valid publication year.", text_color=Theme.DANGER)
+            t = title_entry.get().strip()
+            if not t:
+                status_lbl.configure(text="Paper title is required.", text_color=Theme.DANGER)
+                return
+            y_str = year_entry.get().strip()
+            if not y_str or not y_str.isdigit() or len(y_str) != 4:
+                status_lbl.configure(text="Please enter a valid 4-digit publication year (e.g. 2024).", text_color=Theme.DANGER)
+                return
+            year_int = int(y_str)
+            if year_int < 1900 or year_int > 2100:
+                status_lbl.configure(text="Year must be between 1900 and 2100.", text_color=Theme.DANGER)
                 return
 
-            primary_area_id = None
-            selected_ids = []
-            for area_id, var in selected_area_vars.items():
-                if var.get():
-                    selected_ids.append(int(area_id))
-                    if primary_area_id is None:
-                        primary_area_id = int(area_id)
+            v_val = venue_entry.get().strip() or None
+            d_val = doi_entry.get().strip() or None
+            abs_val = abstract_box.get("1.0", "end").strip() or None
+            primary_id = area_map.get(sel_area_var.get())
 
             payload = {
-                "title": title,
-                "publication_year": year,
-                "venue": venue,
-                "doi": doi,
-                "url": doi if doi and (doi.startswith("http://") or doi.startswith("https://")) else None,
-                "abstract": abstract,
-                "primary_area_id": primary_area_id,
-                "research_area_ids": selected_ids,
+                "title": t,
+                "publication_year": year_int,
+                "venue": v_val,
+                "doi": d_val,
+                "url": d_val if d_val and (d_val.startswith("http://") or d_val.startswith("https://")) else None,
+                "abstract": abs_val,
+                "primary_area_id": primary_id,
+                "research_area_ids": [primary_id] if primary_id else [],
                 "author_ids": [self.researcher_id]
             }
             try:
                 api_client.create_paper(payload)
-                status.configure(text="Paper saved.", text_color=Theme.SUCCESS)
                 win.destroy()
-                self._refresh_profile()
-            except Exception as e:
-                status.configure(text=str(e), text_color=Theme.DANGER)
+                if self.winfo_exists():
+                    self._refresh_profile()
+            except Exception as exc:
+                if win.winfo_exists():
+                    status_lbl.configure(text=f"Failed to add paper: {exc}", text_color=Theme.DANGER)
 
-        save_btn = create_primary_button(btn_row, text="Save Paper", command=_save_paper, width=120)
-        save_btn.pack(side="left", padx=6)
-        ctk.CTkButton(btn_row, text="Cancel", command=win.destroy, fg_color="transparent").pack(side="left", padx=6)
+        ctk.CTkButton(
+            action_row,
+            text="Cancel",
+            command=win.destroy,
+            fg_color="transparent",
+            hover_color=Theme.MUTED_BG,
+            text_color=Theme.SECONDARY_TEXT,
+            width=110,
+            height=34
+        ).pack(side="left")
+
+        create_primary_button(
+            action_row,
+            text="Save Paper",
+            command=_save_paper,
+            width=140,
+            height=34
+        ).pack(side="right")
