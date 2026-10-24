@@ -14,7 +14,7 @@ try:
 except ImportError:
     nx = None
 
-from api_client.client import api_client, APIClientError
+from api_client.client import api_client
 from services.network_service import NetworkService
 from services.research_service import ResearchService
 from ui.theme import (
@@ -22,7 +22,8 @@ from ui.theme import (
     create_card,
     create_primary_button,
     create_secondary_button,
-    create_badge
+    create_badge,
+    enable_mousewheel
 )
 
 
@@ -47,18 +48,22 @@ class NetworkView(ctk.CTkFrame):
         self.graph_data: Dict[str, Any] = {"nodes": [], "edges": [], "stats": {}}
         self.clusters: List[Dict[str, Any]] = []
         self.node_positions: Dict[int, Tuple[float, float]] = {}
-        self.normalized_layout: Dict[int, Tuple[float, float]] = {}
+        self.normalized_connected: Dict[int, Tuple[float, float]] = {}
+        self.connected_node_ids: List[int] = []
+        self.isolated_node_ids: List[int] = []
 
-        # Mappings
-        self.name_to_id: Dict[str, int] = {}
-        self.id_to_name: Dict[int, str] = {}
+        # Unique Mappings & Option Menus
         self.nodes_by_id: Dict[int, Dict[str, Any]] = {}
+        self.id_to_name: Dict[int, str] = {}
+        self.dropdown_labels: List[str] = []
+        self.label_to_id: Dict[str, int] = {}
+        self.id_to_label: Dict[int, str] = {}
         self.adjacency_map: Dict[int, List[Tuple[int, int]]] = {}  # u -> list of (v, weight)
 
         # Selection & Highlighting State
         self.current_researcher_id: Optional[int] = None
-        self.selected_node_id: Optional[int] = None
-        self.target_node_id: Optional[int] = None
+        self.selected_node_id: Optional[int] = None      # Researcher A (Source)
+        self.target_node_id: Optional[int] = None        # Researcher B (Target)
         self.highlighted_collaborators: Set[int] = set()
         self.highlighted_path_nodes: Set[int] = set()
         self.highlighted_path_edges: Set[Tuple[int, int]] = set()
@@ -66,8 +71,8 @@ class NetworkView(ctk.CTkFrame):
         self.highlighted_cluster_nodes: Set[int] = set()
 
         # Canvas Dimensions & Hover State
-        self.canvas_width: int = 650
-        self.canvas_height: int = 500
+        self.canvas_width: int = 680
+        self.canvas_height: int = 520
         self.hovered_node_id: Optional[int] = None
 
         # Initialize Data & UI
@@ -77,13 +82,25 @@ class NetworkView(ctk.CTkFrame):
         self._build_overview_cards()
         self._build_main_layout()
 
-        # Default selection: Selected Researcher (Researcher A)
-        default_id = self.current_researcher_id or (self.graph_data["nodes"][0]["id"] if self.graph_data.get("nodes") else None)
-        if default_id:
-            self._select_researcher_by_id(default_id, update_dropdown=True)
+        # Default selections: Researcher A (current user or 1st node), Researcher B (2nd node)
+        nodes = self.graph_data.get("nodes", [])
+        default_a = self.current_researcher_id or (nodes[0]["id"] if nodes else None)
+        default_b = None
+        if nodes:
+            for n in nodes:
+                if n["id"] != default_a:
+                    default_b = n["id"]
+                    break
+            if default_b is None:
+                default_b = default_a
+
+        if default_a:
+            self._select_researcher_by_id(default_a, update_dropdown=True)
+        if default_b:
+            self._set_target_researcher_by_id(default_b, update_dropdown=True)
 
         self._calculate_node_layout()
-        self.after(50, self._draw_graph)
+        self.after(60, self._draw_graph)
 
     # =========================================================================
     # DATA LOADING & INITIALIZATION
@@ -121,18 +138,38 @@ class NetworkView(ctk.CTkFrame):
             except Exception:
                 self.clusters = []
 
-        # Index nodes & build fast adjacency lookup
+        # Index nodes & build lookup structures
         nodes = self.graph_data.get("nodes", [])
         self.nodes_by_id = {n["id"]: n for n in nodes}
-        self.name_to_id = {n["name"]: n["id"] for n in nodes}
         self.id_to_name = {n["id"]: n["name"] for n in nodes}
 
+        # Build adjacency map
         self.adjacency_map = {n["id"]: [] for n in nodes}
         for edge in self.graph_data.get("edges", []):
             u, v, w = edge["source"], edge["target"], edge.get("weight", 1)
             if u in self.adjacency_map and v in self.adjacency_map:
                 self.adjacency_map[u].append((v, w))
                 self.adjacency_map[v].append((u, w))
+
+        # Partition into connected vs isolated nodes based on actual degree
+        self.connected_node_ids = [nid for nid, neighbors in self.adjacency_map.items() if len(neighbors) > 0]
+        self.isolated_node_ids = [nid for nid, neighbors in self.adjacency_map.items() if len(neighbors) == 0]
+
+        # Build 100% collision-free dropdown options: "Name (Dept) · ID:X"
+        self.dropdown_labels = []
+        self.label_to_id = {}
+        self.id_to_label = {}
+        for n in sorted(nodes, key=lambda x: (x.get("department") or "", x["name"])):
+            nid = n["id"]
+            name = n["name"]
+            dept = n.get("department", "")
+            if dept:
+                label = f"{name} ({dept}) · ID:{nid}"
+            else:
+                label = f"{name} · ID:{nid}"
+            self.dropdown_labels.append(label)
+            self.label_to_id[label] = nid
+            self.id_to_label[nid] = label
 
     # =========================================================================
     # UI CONSTRUCTION: HEADER & METRIC OVERVIEW CARDS
@@ -155,7 +192,7 @@ class NetworkView(ctk.CTkFrame):
 
         subtitle = ctk.CTkLabel(
             title_box,
-            text="Explore how researchers are connected through academic collaboration and joint publications.",
+            text="Explore collaborative academic topology, degrees of separation, and research clusters.",
             font=Theme.FONT_BODY,
             text_color=Theme.SECONDARY_TEXT
         )
@@ -163,7 +200,7 @@ class NetworkView(ctk.CTkFrame):
 
         concept_badge = create_badge(
             head,
-            text="Graph: Adjacency List  ·  Node: Researcher  ·  Edge: Academic Collaboration",
+            text="Graph ADT: Adjacency List  ·  Node: Researcher  ·  Edge: Academic Collaboration",
             bg_color="#EBF4FF",
             text_color=Theme.ACADEMIC_BLUE,
             font=Theme.FONT_BODY_BOLD
@@ -202,7 +239,7 @@ class NetworkView(ctk.CTkFrame):
         # 4. Selected Researcher Name
         c4 = create_card(row)
         c4.grid(row=0, column=3, sticky="nsew", padx=(6, 0))
-        ctk.CTkLabel(c4, text="SELECTED RESEARCHER", font=Theme.FONT_CAPTION, text_color=Theme.SECONDARY_TEXT).pack(anchor="w", padx=14, pady=(10, 0))
+        ctk.CTkLabel(c4, text="SELECTED RESEARCHER (A)", font=Theme.FONT_CAPTION, text_color=Theme.SECONDARY_TEXT).pack(anchor="w", padx=14, pady=(10, 0))
         self.overview_selected_lbl = ctk.CTkLabel(
             c4,
             text="None selected",
@@ -241,7 +278,7 @@ class NetworkView(ctk.CTkFrame):
         ).pack(anchor="w")
         ctk.CTkLabel(
             c_title_box,
-            text="Click any node to select researcher & highlight direct collaborators",
+            text="Left-click node: Select Researcher A  ·  Right-click: Set Target B  ·  Hover for details",
             font=Theme.FONT_CAPTION,
             text_color=Theme.SECONDARY_TEXT
         ).pack(anchor="w")
@@ -289,8 +326,11 @@ class NetworkView(ctk.CTkFrame):
         )
         self.canvas.pack(fill="both", expand=True, padx=12, pady=(4, 6))
         self.canvas.bind("<Configure>", lambda e: self._on_canvas_resize())
-        self.canvas.bind("<Button-1>", self._on_canvas_click)
+        self.canvas.bind("<Button-1>", self._on_canvas_left_click)
+        self.canvas.bind("<Button-2>", self._on_canvas_right_click)
+        self.canvas.bind("<Button-3>", self._on_canvas_right_click)
         self.canvas.bind("<Motion>", self._on_canvas_motion)
+        self.canvas.bind("<Leave>", self._on_canvas_leave)
 
         # Legend Bar below canvas
         legend_bar = ctk.CTkFrame(canvas_card, fg_color=Theme.SOFT_BG, height=36, corner_radius=6)
@@ -318,6 +358,7 @@ class NetworkView(ctk.CTkFrame):
 
         self.control_scroll = ctk.CTkScrollableFrame(control_card, fg_color="transparent")
         self.control_scroll.pack(fill="both", expand=True, padx=12, pady=12)
+        enable_mousewheel(self.control_scroll)
 
         # --- SECTION 1: SELECTED RESEARCHER DETAILS CARD ---
         self.details_card = create_card(self.control_scroll, fg_color=Theme.WHITE)
@@ -327,14 +368,31 @@ class NetworkView(ctk.CTkFrame):
         det_inner.pack(fill="x", padx=14, pady=12)
 
         det_header = ctk.CTkFrame(det_inner, fg_color="transparent")
-        det_header.pack(fill="x", pady=(0, 4))
+        det_header.pack(fill="x", pady=(0, 6))
         ctk.CTkLabel(det_header, text="SELECTED RESEARCHER", font=Theme.FONT_CAPTION, text_color=Theme.SECONDARY_TEXT).pack(side="left")
 
+        actions_box = ctk.CTkFrame(det_header, fg_color="transparent")
+        actions_box.pack(side="right")
+
+        self.set_target_btn = ctk.CTkButton(
+            actions_box,
+            text="Set as Target (B)",
+            command=self._set_current_selected_as_target,
+            width=105,
+            height=24,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color="#F3E8FF",
+            text_color=Theme.PURPLE,
+            hover_color="#E9D5FF",
+            font=Theme.FONT_CAPTION
+        )
+        self.set_target_btn.pack(side="left", padx=(0, 4))
+
         self.view_profile_btn = ctk.CTkButton(
-            det_header,
-            text="View Full Profile →",
+            actions_box,
+            text="Full Profile →",
             command=self._open_selected_profile,
-            width=120,
+            width=85,
             height=24,
             corner_radius=Theme.RADIUS_BUTTON,
             fg_color="#EFF6FF",
@@ -342,13 +400,18 @@ class NetworkView(ctk.CTkFrame):
             hover_color="#DBEAFE",
             font=Theme.FONT_CAPTION
         )
-        self.view_profile_btn.pack(side="right")
+        self.view_profile_btn.pack(side="left")
 
+        # Researcher Name & Metadata
         self.det_name_lbl = ctk.CTkLabel(det_inner, text="Select a researcher", font=Theme.FONT_SUBTITLE, text_color=Theme.NAVY)
-        self.det_name_lbl.pack(anchor="w", pady=(0, 2))
+        self.det_name_lbl.pack(anchor="w", pady=(2, 2))
 
-        self.det_meta_lbl = ctk.CTkLabel(det_inner, text="", font=Theme.FONT_BODY, text_color=Theme.SECONDARY_TEXT)
-        self.det_meta_lbl.pack(anchor="w", pady=(0, 8))
+        self.det_meta_lbl = ctk.CTkLabel(det_inner, text="", font=Theme.FONT_BODY, text_color=Theme.SECONDARY_TEXT, justify="left")
+        self.det_meta_lbl.pack(anchor="w", pady=(0, 6))
+
+        # Metrics chips row (Citations, Co-authors, Papers)
+        self.metrics_row = ctk.CTkFrame(det_inner, fg_color="transparent")
+        self.metrics_row.pack(fill="x", pady=(0, 10))
 
         # Direct Collaborators Sub-Section
         self.collab_sec_lbl = ctk.CTkLabel(det_inner, text="Direct Collaborators (0)", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT)
@@ -358,12 +421,16 @@ class NetworkView(ctk.CTkFrame):
         self.collab_chips_frame.pack(fill="x", pady=(0, 8))
 
         # Research Areas Sub-Section
-        ctk.CTkLabel(det_inner, text="Research Areas", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
+        self.areas_sec_lbl = ctk.CTkLabel(det_inner, text="Research Areas", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT)
+        self.areas_sec_lbl.pack(anchor="w", pady=(2, 2))
+
         self.areas_chips_frame = ctk.CTkFrame(det_inner, fg_color="transparent")
         self.areas_chips_frame.pack(fill="x", pady=(0, 8))
 
         # Skills Sub-Section
-        ctk.CTkLabel(det_inner, text="Skills", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
+        self.skills_sec_lbl = ctk.CTkLabel(det_inner, text="Skills & Expertise", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT)
+        self.skills_sec_lbl.pack(anchor="w", pady=(2, 2))
+
         self.skills_chips_frame = ctk.CTkFrame(det_inner, fg_color="transparent")
         self.skills_chips_frame.pack(fill="x", pady=(0, 4))
 
@@ -374,17 +441,16 @@ class NetworkView(ctk.CTkFrame):
         ana_inner = ctk.CTkFrame(analysis_card, fg_color="transparent")
         ana_inner.pack(fill="x", padx=14, pady=12)
 
-        ctk.CTkLabel(ana_inner, text="COLLABORATION ANALYSIS", font=Theme.FONT_CAPTION, text_color=Theme.SECONDARY_TEXT).pack(anchor="w", pady=(0, 4))
-        ctk.CTkLabel(ana_inner, text="Graph Path & Traversal Algorithms", font=Theme.FONT_SECTION, text_color=Theme.NAVY).pack(anchor="w", pady=(0, 10))
+        ctk.CTkLabel(ana_inner, text="COLLABORATION ANALYSIS", font=Theme.FONT_CAPTION, text_color=Theme.SECONDARY_TEXT).pack(anchor="w", pady=(0, 2))
+        ctk.CTkLabel(ana_inner, text="Graph Path & Traversal Algorithms", font=Theme.FONT_SECTION, text_color=Theme.NAVY).pack(anchor="w", pady=(0, 8))
 
         # Researcher A dropdown
-        ctk.CTkLabel(ana_inner, text="Researcher A (Source)", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
-        researcher_names = sorted(list(self.name_to_id.keys())) if self.name_to_id else ["No researchers"]
-        self.src_var = ctk.StringVar(value=researcher_names[0] if researcher_names else "")
+        ctk.CTkLabel(ana_inner, text="Researcher A (Source Scholar)", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
+        self.src_var = ctk.StringVar(value=self.dropdown_labels[0] if self.dropdown_labels else "No researchers")
         self.src_menu = ctk.CTkOptionMenu(
             ana_inner,
             variable=self.src_var,
-            values=researcher_names,
+            values=self.dropdown_labels if self.dropdown_labels else ["No researchers"],
             height=34,
             corner_radius=Theme.RADIUS_INPUT,
             fg_color=Theme.ACADEMIC_BLUE,
@@ -392,14 +458,31 @@ class NetworkView(ctk.CTkFrame):
         )
         self.src_menu.pack(fill="x", pady=(0, 8))
 
+        # Swap button
+        swap_bar = ctk.CTkFrame(ana_inner, fg_color="transparent")
+        swap_bar.pack(fill="x", pady=(0, 4))
+        swap_btn = ctk.CTkButton(
+            swap_bar,
+            text="⇄ Swap A and B",
+            command=self._swap_researchers_a_and_b,
+            width=110,
+            height=26,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.MUTED_BG,
+            text_color=Theme.NAVY,
+            hover_color="#E2E8F0",
+            font=Theme.FONT_CAPTION
+        )
+        swap_btn.pack(side="right")
+
         # Researcher B dropdown
-        ctk.CTkLabel(ana_inner, text="Researcher B (Target)", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
-        second_name = researcher_names[1] if len(researcher_names) > 1 else (researcher_names[0] if researcher_names else "")
-        self.tgt_var = ctk.StringVar(value=second_name)
+        ctk.CTkLabel(ana_inner, text="Researcher B (Target Scholar)", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
+        second_val = self.dropdown_labels[1] if len(self.dropdown_labels) > 1 else (self.dropdown_labels[0] if self.dropdown_labels else "")
+        self.tgt_var = ctk.StringVar(value=second_val)
         self.tgt_menu = ctk.CTkOptionMenu(
             ana_inner,
             variable=self.tgt_var,
-            values=researcher_names,
+            values=self.dropdown_labels if self.dropdown_labels else ["No researchers"],
             height=34,
             corner_radius=Theme.RADIUS_INPUT,
             fg_color=Theme.NAVY,
@@ -414,7 +497,7 @@ class NetworkView(ctk.CTkFrame):
         # 1. Shortest Path (BFS)
         bfs_btn = create_primary_button(
             btn_box,
-            text="⚡ Find Shortest Collaboration Path",
+            text="⚡ Find Shortest Collaboration Path (BFS)",
             command=self._run_bfs_shortest_path,
             height=36
         )
@@ -439,32 +522,47 @@ class NetworkView(ctk.CTkFrame):
         )
         dfs_trav_btn.pack(fill="x", pady=3)
 
+        # 4. Connected Components / Research Clusters (DFS)
+        clusters_btn = create_secondary_button(
+            btn_box,
+            text="🧩 Detect Research Clusters (Components)",
+            command=self._run_clusters,
+            height=34
+        )
+        clusters_btn.pack(fill="x", pady=3)
+
+        # 5. Reset Graph to Default State
+        reset_btn = create_secondary_button(
+            btn_box,
+            text="🔄 Reset Graph to Default State",
+            command=self._reset_network_view,
+            height=34
+        )
+        reset_btn.pack(fill="x", pady=3)
+
         # --- SECTION 3: ALGORITHM RESULT PANEL ---
         self.result_card = create_card(self.control_scroll, fg_color=Theme.WHITE)
         self.result_card.pack(fill="x", pady=(0, 12))
 
-        res_inner = ctk.CTkFrame(self.result_card, fg_color="transparent")
-        res_inner.pack(fill="x", padx=14, pady=12)
+        self.res_inner = ctk.CTkFrame(self.result_card, fg_color="transparent")
+        self.res_inner.pack(fill="x", padx=14, pady=12)
 
-        res_head = ctk.CTkFrame(res_inner, fg_color="transparent")
+        res_head = ctk.CTkFrame(self.res_inner, fg_color="transparent")
         res_head.pack(fill="x", pady=(0, 6))
 
         ctk.CTkLabel(res_head, text="ALGORITHM RESULT", font=Theme.FONT_CAPTION, text_color=Theme.SECONDARY_TEXT).pack(side="left")
         self.algo_badge = create_badge(res_head, text="Ready", bg_color="#EEF2FF", text_color=Theme.ACADEMIC_BLUE)
         self.algo_badge.pack(side="right")
 
-        self.res_title = ctk.CTkLabel(res_inner, text="Select researchers & execute an algorithm", font=Theme.FONT_SECTION, text_color=Theme.NAVY)
+        self.res_title = ctk.CTkLabel(self.res_inner, text="Select researchers & execute an algorithm", font=Theme.FONT_SECTION, text_color=Theme.NAVY)
         self.res_title.pack(anchor="w", pady=(0, 4))
 
-        self.res_content = ctk.CTkLabel(
-            res_inner,
-            text="Click 'Find Shortest Collaboration Path' to calculate the degrees of separation between Researcher A and Researcher B, or run BFS/DFS traversals.",
-            font=Theme.FONT_BODY,
-            text_color=Theme.DARK_TEXT,
-            wraplength=340,
-            justify="left"
-        )
-        self.res_content.pack(anchor="w")
+        # Dynamic container for rich algorithm output widgets
+        self.res_body_container = ctk.CTkFrame(self.res_inner, fg_color="transparent")
+        self.res_body_container.pack(fill="x", pady=(4, 0))
+
+        # Default message
+        self._set_default_result_message()
 
         # --- SECTION 4: DATA STRUCTURE & ALGORITHMIC EXPLANATION PANEL ---
         ds_card = create_card(self.control_scroll, fg_color="#F8FAFC")
@@ -473,18 +571,18 @@ class NetworkView(ctk.CTkFrame):
         ds_inner = ctk.CTkFrame(ds_card, fg_color="transparent")
         ds_inner.pack(fill="x", padx=14, pady=12)
 
-        ctk.CTkLabel(ds_inner, text="DATA STRUCTURE USED", font=Theme.FONT_CAPTION, text_color=Theme.SECONDARY_TEXT).pack(anchor="w", pady=(0, 2))
+        ctk.CTkLabel(ds_inner, text="DATA STRUCTURE & COMPLEXITY", font=Theme.FONT_CAPTION, text_color=Theme.SECONDARY_TEXT).pack(anchor="w", pady=(0, 2))
         ctk.CTkLabel(ds_inner, text="Graph ADT (Adjacency List)", font=Theme.FONT_SECTION, text_color=Theme.NAVY).pack(anchor="w", pady=(0, 6))
 
         ds_desc = (
             "• Representation: Adjacency List Dictionary (O(V + E) space)\n"
-            "• Node (Vertex): Researcher profile in MySQL\n"
+            "• Node (Vertex): Researcher profile in MySQL database\n"
             "• Edge: Academic Collaboration (Co-Authorship)\n"
-            "• Edge Weight: Joint publication count\n\n"
+            "• Edge Weight: Joint publication count (co-authored papers)\n\n"
             "ALGORITHMS IMPLEMENTED:\n"
-            "• BFS (Breadth-First Search): Explores co-authors level-by-level using a FIFO queue; guarantees the shortest academic collaboration path.\n"
-            "• DFS (Depth-First Search): Explores deep collaborative branches recursively using LIFO order.\n"
-            "• Connected Components: Partitions researchers into isolated or interdisciplinary research clusters using DFS."
+            "• BFS (Breadth-First Search): Explores neighbors layer-by-layer using a FIFO queue; guarantees the shortest collaboration path (O(V + E) time).\n"
+            "• DFS (Depth-First Search): Explores deep collaborative branches recursively using LIFO stack order.\n"
+            "• Connected Components: Partitions the campus network into disjoint collaboration clusters using DFS."
         )
         ctk.CTkLabel(
             ds_inner,
@@ -495,14 +593,28 @@ class NetworkView(ctk.CTkFrame):
             justify="left"
         ).pack(anchor="w")
 
+    def _set_default_result_message(self):
+        for child in self.res_body_container.winfo_children():
+            child.destroy()
+        lbl = ctk.CTkLabel(
+            self.res_body_container,
+            text="Click 'Find Shortest Collaboration Path' to calculate the degrees of separation between Researcher A and Researcher B, or run BFS/DFS traversals.",
+            font=Theme.FONT_BODY,
+            text_color=Theme.DARK_TEXT,
+            wraplength=340,
+            justify="left"
+        )
+        lbl.pack(anchor="w")
+
     # =========================================================================
-    # GRAPH LAYOUT CALCULATION (NETWORKX SPRING LAYOUT)
+    # GRAPH LAYOUT CALCULATION (COMPONENT-AWARE + ANTI-COLLISION RELAXATION)
     # =========================================================================
 
     def _calculate_node_layout(self):
         """
-        Calculates 2D positions for all researcher nodes using NetworkX force-directed
-        spring layout. Disconnected components and isolated researchers are spaced cleanly.
+        Calculates 2D positions for all researcher nodes.
+        Separates the connected collaboration network from disconnected/isolated researchers
+        to prevent any overlapping, crowding, or squishing.
         """
         nodes = self.graph_data.get("nodes", [])
         if not nodes:
@@ -510,55 +622,125 @@ class NetworkView(ctk.CTkFrame):
 
         w = self.canvas.winfo_width() or self.canvas_width
         h = self.canvas.winfo_height() or self.canvas_height
-        self.canvas_width = max(w, 400)
-        self.canvas_height = max(h, 350)
+        self.canvas_width = max(w, 450)
+        self.canvas_height = max(h, 400)
 
-        # Build NetworkX graph if available
-        if nx is not None:
-            G = nx.Graph()
-            for n in nodes:
-                G.add_node(n["id"])
-            for e in self.graph_data.get("edges", []):
-                G.add_edge(e["source"], e["target"], weight=e.get("weight", 1))
+        # 1. Compute normalized layout for connected subgraph
+        self.normalized_connected.clear()
+        if self.connected_node_ids:
+            if nx is not None:
+                subG = nx.Graph()
+                for nid in self.connected_node_ids:
+                    subG.add_node(nid)
+                for e in self.graph_data.get("edges", []):
+                    u, v = e["source"], e["target"]
+                    if u in self.connected_node_ids and v in self.connected_node_ids:
+                        subG.add_edge(u, v, weight=e.get("weight", 1))
 
-            # Fixed seed ensures deterministic, stable positions across clicks & renders
-            raw_pos = nx.spring_layout(G, k=0.45, iterations=80, seed=42)
+                # Generous k=1.3 allows connected nodes to expand
+                raw_pos = nx.spring_layout(subG, k=1.35, iterations=120, seed=42)
+                xs = [float(p[0]) for p in raw_pos.values()]
+                ys = [float(p[1]) for p in raw_pos.values()]
+                min_x, max_x = min(xs), max(xs)
+                min_y, max_y = min(ys), max(ys)
+                span_x = max(max_x - min_x, 1e-6)
+                span_y = max(max_y - min_y, 1e-6)
 
-            xs = [p[0] for p in raw_pos.values()]
-            ys = [p[1] for p in raw_pos.values()]
-            min_x, max_x = min(xs), max(xs)
-            min_y, max_y = min(ys), max(ys)
-
-            self.normalized_layout.clear()
-            for nid, (x, y) in raw_pos.items():
-                nx_norm = (x - min_x) / (max_x - min_x + 1e-9)
-                ny_norm = (y - min_y) / (max_y - min_y + 1e-9)
-                self.normalized_layout[nid] = (float(nx_norm), float(ny_norm))
-        else:
-            # Fallback circular layout if NetworkX is missing
-            num_nodes = len(nodes)
-            self.normalized_layout.clear()
-            for idx, node in enumerate(nodes):
-                angle = 2 * math.pi * idx / num_nodes
-                r = 0.42 if (idx % 2 == 0) else 0.36
-                nx_norm = 0.5 + r * math.cos(angle)
-                ny_norm = 0.5 + r * math.sin(angle)
-                self.normalized_layout[node["id"]] = (nx_norm, ny_norm)
+                for nid, (rx, ry) in raw_pos.items():
+                    nx_val = (float(rx) - min_x) / span_x
+                    ny_val = (float(ry) - min_y) / span_y
+                    self.normalized_connected[nid] = (nx_val, ny_val)
+            else:
+                # Fallback circular layout for connected nodes
+                num_c = len(self.connected_node_ids)
+                for idx, nid in enumerate(self.connected_node_ids):
+                    angle = 2 * math.pi * idx / num_c
+                    r = 0.42 if (idx % 2 == 0) else 0.35
+                    nx_val = 0.5 + r * math.cos(angle)
+                    ny_val = 0.5 + r * math.sin(angle)
+                    self.normalized_connected[nid] = (nx_val, ny_val)
 
         self._scale_layout_to_canvas()
 
     def _scale_layout_to_canvas(self):
-        """Map normalized layout (0..1) to current canvas screen coordinates with padding."""
-        margin_x = 55
-        margin_y = 50
-        usable_w = max(100, self.canvas_width - 2 * margin_x)
-        usable_h = max(100, self.canvas_height - 2 * margin_y)
+        """Map normalized layout to screen coordinates with guaranteed minimum node distances."""
+        w = self.canvas_width
+        h = self.canvas_height
+
+        margin_x = 48.0
+        margin_y = 48.0
+
+        # Partition canvas: if isolated nodes exist, allocate right column for them
+        has_isolated = len(self.isolated_node_ids) > 0
+        if has_isolated:
+            main_w = w * 0.73
+            iso_w = w - main_w
+        else:
+            main_w = float(w)
+            iso_w = 0.0
+
+        usable_main_w = max(120.0, main_w - margin_x - 30.0)
+        usable_main_h = max(120.0, h - 2 * margin_y)
 
         self.node_positions.clear()
-        for nid, (nx_val, ny_val) in self.normalized_layout.items():
-            screen_x = margin_x + nx_val * usable_w
-            screen_y = margin_y + ny_val * usable_h
-            self.node_positions[nid] = (screen_x, screen_y)
+
+        # 1. Place connected nodes in the primary area
+        pts: Dict[int, List[float]] = {}
+        for nid, (nx_val, ny_val) in self.normalized_connected.items():
+            screen_x = margin_x + nx_val * usable_main_w
+            screen_y = margin_y + ny_val * usable_main_h
+            pts[nid] = [screen_x, screen_y]
+
+        # 2. Anti-collision relaxation: enforce minimum 80px distance between connected nodes
+        min_allowed = 80.0
+        conn_keys = list(pts.keys())
+        for _ in range(45):
+            moved = False
+            for i in range(len(conn_keys)):
+                for j in range(i + 1, len(conn_keys)):
+                    n1 = conn_keys[i]
+                    n2 = conn_keys[j]
+                    dx = pts[n1][0] - pts[n2][0]
+                    dy = pts[n1][1] - pts[n2][1]
+                    dist = math.hypot(dx, dy)
+                    if dist < 1e-4:
+                        dx, dy = 1.0, 1.0
+                        dist = math.hypot(dx, dy)
+                    if dist < min_allowed:
+                        moved = True
+                        overlap = (min_allowed - dist) * 0.5
+                        ux, uy = dx / dist, dy / dist
+                        pts[n1][0] += ux * overlap * 0.5
+                        pts[n1][1] += uy * overlap * 0.5
+                        pts[n2][0] -= ux * overlap * 0.5
+                        pts[n2][1] -= uy * overlap * 0.5
+
+            # Clamp within main network bounds
+            for nid in conn_keys:
+                pts[nid][0] = max(margin_x, min(pts[nid][0], margin_x + usable_main_w))
+                pts[nid][1] = max(margin_y, min(pts[nid][1], margin_y + usable_main_h))
+
+            if not moved:
+                break
+
+        for nid, p in pts.items():
+            self.node_positions[nid] = (float(p[0]), float(p[1]))
+
+        # 3. Place isolated/disconnected nodes in an organized right-hand shelf
+        if has_isolated:
+            iso_start_x = main_w + 12.0
+            iso_usable_w = max(60.0, iso_w - 24.0)
+            cols = 2 if len(self.isolated_node_ids) > 5 else 1
+            col_w = iso_usable_w / cols
+            total_rows = math.ceil(len(self.isolated_node_ids) / cols)
+            row_h = usable_main_h / max(1, total_rows)
+
+            for idx, nid in enumerate(self.isolated_node_ids):
+                col = idx % cols
+                row = idx // cols
+                ix = iso_start_x + (col + 0.5) * col_w
+                iy = margin_y + (row + 0.5) * row_h
+                self.node_positions[nid] = (float(ix), float(iy))
 
     def _on_canvas_resize(self):
         w = self.canvas.winfo_width()
@@ -573,8 +755,21 @@ class NetworkView(ctk.CTkFrame):
     # GRAPH RENDERING ON CANVAS
     # =========================================================================
 
+    def _format_node_label(self, full_name: str, nid: int) -> str:
+        """Create a clean, human-readable label that never overflows or duplicates."""
+        parts = full_name.split()
+        if len(parts) == 1:
+            return full_name[:14]
+        if parts[0] in ("Dr.", "Prof.", "Mr.", "Ms.", "Mrs."):
+            if len(parts) >= 3:
+                return f"{parts[0]} {parts[1][0]}. {parts[2]}"
+            return f"{parts[0]} {parts[1]}"
+        if len(parts) == 2:
+            return f"{parts[0]} {parts[1][0]}."
+        return f"{parts[0]} {parts[-1][0]}."
+
     def _draw_graph(self):
-        """Renders edges, nodes, halos, collaborator rings, and shortest paths."""
+        """Renders edges, weight tags, nodes, halos, collaborator rings, and shortest paths."""
         if not self.winfo_exists():
             return
 
@@ -593,7 +788,31 @@ class NetworkView(ctk.CTkFrame):
             )
             return
 
-        # 1. DRAW EDGES
+        # 1. DRAW SECTION DIVIDERS & LABELS (IF ISOLATED NODES EXIST)
+        if self.isolated_node_ids:
+            divider_x = self.canvas_width * 0.73
+            # Subtle dashed vertical divider
+            self.canvas.create_line(
+                divider_x, 24, divider_x, self.canvas_height - 20,
+                fill="#E2E8F0", width=1.2, dash=(4, 4)
+            )
+            # Section titles
+            self.canvas.create_text(
+                45, 20,
+                text=f"COLLABORATION NETWORK ({len(self.connected_node_ids)} Researchers · {len(edges)} Edges)",
+                anchor="w",
+                fill=Theme.SECONDARY_TEXT,
+                font=(Theme.FONT_FAMILY, 8, "bold")
+            )
+            self.canvas.create_text(
+                divider_x + 12, 20,
+                text=f"INDEPENDENT SCHOLARS ({len(self.isolated_node_ids)})",
+                anchor="w",
+                fill=Theme.SECONDARY_TEXT,
+                font=(Theme.FONT_FAMILY, 8, "bold")
+            )
+
+        # 2. DRAW EDGES
         for edge in edges:
             u, v = edge["source"], edge["target"]
             if u not in self.node_positions or v not in self.node_positions:
@@ -602,18 +821,20 @@ class NetworkView(ctk.CTkFrame):
             x1, y1 = self.node_positions[u]
             x2, y2 = self.node_positions[v]
             pair = (min(u, v), max(u, v))
+            weight = edge.get("weight", 1)
 
             # Edge Styling Priority: Shortest Path > Direct Collaborator > Normal
             if pair in self.highlighted_path_edges:
                 line_color = Theme.PURPLE
-                line_width = 4
+                line_width = 3.8
             elif (self.selected_node_id == u and v in self.highlighted_collaborators) or \
                  (self.selected_node_id == v and u in self.highlighted_collaborators):
-                line_color = "#0284C7"  # Deep sky blue
-                line_width = 2.5
+                line_color = "#0284C7"  # Sky blue
+                line_width = 2.6
             else:
-                line_color = "#E2E8F0"
-                line_width = max(1.2, min(edge.get("weight", 1) * 1.2, 3.5))
+                # Subtle slate gray, visible but elegant
+                line_color = "#CBD5E1"
+                line_width = 1.6 + min(weight - 1, 3) * 0.4
 
             self.canvas.create_line(
                 x1, y1, x2, y2,
@@ -622,8 +843,25 @@ class NetworkView(ctk.CTkFrame):
                 capstyle="round"
             )
 
-        # 2. DRAW NODES
-        node_radius = 16
+            # Draw paper count badge at edge midpoint for highlighted edges or multi-paper collaborations
+            if pair in self.highlighted_path_edges or (self.selected_node_id in (u, v) and (u in self.highlighted_collaborators or v in self.highlighted_collaborators)) or weight > 1:
+                mx = (x1 + x2) / 2
+                my = (y1 + y2) / 2
+                pill_bg = "#F3E8FF" if pair in self.highlighted_path_edges else "#F1F5F9"
+                pill_fg = Theme.PURPLE if pair in self.highlighted_path_edges else Theme.DARK_TEXT
+                self.canvas.create_oval(
+                    mx - 9, my - 7, mx + 9, my + 7,
+                    fill=pill_bg, outline="#CBD5E1", width=1
+                )
+                self.canvas.create_text(
+                    mx, my,
+                    text=str(weight),
+                    fill=pill_fg,
+                    font=(Theme.FONT_FAMILY, 7, "bold")
+                )
+
+        # 3. DRAW NODES
+        node_radius = 17.0
 
         for node in nodes:
             nid = node["id"]
@@ -634,8 +872,8 @@ class NetworkView(ctk.CTkFrame):
 
             is_current_user = (nid == self.current_researcher_id)
             is_selected = (nid == self.selected_node_id)
-            is_collaborator = (nid in self.highlighted_collaborators)
             is_target = (nid == self.target_node_id)
+            is_collaborator = (nid in self.highlighted_collaborators)
             is_in_path = (nid in self.highlighted_path_nodes)
             is_in_cluster = (nid in self.highlighted_cluster_nodes)
             traversal_step = self.highlighted_traversal_steps.get(nid)
@@ -648,51 +886,54 @@ class NetworkView(ctk.CTkFrame):
                     x + node_radius + 8, y + node_radius + 8,
                     fill="#FEF3C7", outline="#F59E0B", width=2.5
                 )
-            elif is_in_path:
-                # Purple glow for Shortest Path
-                self.canvas.create_oval(
-                    x - node_radius - 7, y - node_radius - 7,
-                    x + node_radius + 7, y + node_radius + 7,
-                    fill="#EDE9FE", outline=Theme.PURPLE, width=2.5
-                )
-            elif is_collaborator:
-                # Cyan/Sky glow for Direct Collaborators
-                self.canvas.create_oval(
-                    x - node_radius - 6, y - node_radius - 6,
-                    x + node_radius + 6, y + node_radius + 6,
-                    fill="#E0F2FE", outline="#0284C7", width=2
-                )
             elif is_target:
                 # Violet glow for Target Researcher B
                 self.canvas.create_oval(
+                    x - node_radius - 7, y - node_radius - 7,
+                    x + node_radius + 7, y + node_radius + 7,
+                    fill="#F3E8FF", outline="#9333EA", width=2.5
+                )
+            elif is_in_path:
+                # Purple glow for Shortest Path
+                self.canvas.create_oval(
                     x - node_radius - 6, y - node_radius - 6,
                     x + node_radius + 6, y + node_radius + 6,
-                    fill="#F3E8FF", outline="#9333EA", width=2
+                    fill="#EDE9FE", outline=Theme.PURPLE, width=2.2
+                )
+            elif is_collaborator:
+                # Sky Blue glow for Direct Collaborators
+                self.canvas.create_oval(
+                    x - node_radius - 6, y - node_radius - 6,
+                    x + node_radius + 6, y + node_radius + 6,
+                    fill="#E0F2FE", outline="#0284C7", width=2.0
                 )
             elif is_in_cluster:
                 # Emerald glow for Cluster Members
                 self.canvas.create_oval(
                     x - node_radius - 6, y - node_radius - 6,
                     x + node_radius + 6, y + node_radius + 6,
-                    fill="#DCFCE7", outline="#16A34A", width=2
+                    fill="#DCFCE7", outline="#16A34A", width=2.0
                 )
             elif is_current_user:
                 # Green ring for Current Logged-in User
                 self.canvas.create_oval(
-                    x - node_radius - 6, y - node_radius - 6,
-                    x + node_radius + 6, y + node_radius + 6,
+                    x - node_radius - 5, y - node_radius - 5,
+                    x + node_radius + 5, y + node_radius + 5,
                     fill="#F0FDF4", outline="#16A34A", width=1.8
                 )
 
-            # NODE FILL COLOR
+            # NODE FILL COLOR (Matches legend strictly)
             if is_selected:
-                fill_color = "#D97706"
+                fill_color = "#D97706"  # Amber-600
+                border_color = Theme.WHITE
+            elif is_target:
+                fill_color = "#7E22CE"  # Violet-700
                 border_color = Theme.WHITE
             elif is_in_path:
-                fill_color = Theme.PURPLE
+                fill_color = "#6D28D9"  # Purple-700
                 border_color = Theme.WHITE
             elif is_collaborator:
-                fill_color = "#0284C7"
+                fill_color = "#0284C7"  # Sky Blue
                 border_color = Theme.WHITE
             else:
                 fill_color = node.get("avatar_color", Theme.ACADEMIC_BLUE)
@@ -704,7 +945,7 @@ class NetworkView(ctk.CTkFrame):
                 x + node_radius, y + node_radius,
                 fill=fill_color,
                 outline=border_color,
-                width=2
+                width=2.0
             )
 
             # Center Initials
@@ -716,24 +957,34 @@ class NetworkView(ctk.CTkFrame):
                 font=(Theme.FONT_FAMILY, 9, "bold")
             )
 
+            # Role Badges: "A" on top-left of selected, "B" on top-right of target
+            if is_selected:
+                bx, by = x - node_radius + 1, y - node_radius + 1
+                self.canvas.create_oval(bx - 7, by - 7, bx + 7, by + 7, fill="#B45309", outline=Theme.WHITE, width=1.5)
+                self.canvas.create_text(bx, by, text="A", fill=Theme.WHITE, font=(Theme.FONT_FAMILY, 7, "bold"))
+            elif is_target:
+                bx, by = x + node_radius - 1, y - node_radius + 1
+                self.canvas.create_oval(bx - 7, by - 7, bx + 7, by + 7, fill="#581C87", outline=Theme.WHITE, width=1.5)
+                self.canvas.create_text(bx, by, text="B", fill=Theme.WHITE, font=(Theme.FONT_FAMILY, 7, "bold"))
+
             # Traversal Step Badge (if BFS/DFS traversal was run)
-            if traversal_step:
+            if traversal_step and not is_selected:
                 badge_x = x + node_radius + 2
                 badge_y = y - node_radius + 2
                 self.canvas.create_oval(
-                    badge_x - 7, badge_y - 7,
-                    badge_x + 7, badge_y + 7,
+                    badge_x - 8, badge_y - 8,
+                    badge_x + 8, badge_y + 8,
                     fill="#10B981", outline=Theme.WHITE, width=1.5
                 )
                 self.canvas.create_text(
                     badge_x, badge_y,
                     text=str(traversal_step),
                     fill=Theme.WHITE,
-                    font=(Theme.FONT_FAMILY, 7, "bold")
+                    font=(Theme.FONT_FAMILY, 8, "bold")
                 )
 
             # Current User Star Badge
-            if is_current_user and not traversal_step:
+            if is_current_user and not is_selected and not is_target and not traversal_step:
                 star_x = x + node_radius + 2
                 star_y = y - node_radius + 2
                 self.canvas.create_oval(
@@ -748,11 +999,13 @@ class NetworkView(ctk.CTkFrame):
                     font=(Theme.FONT_FAMILY, 7, "bold")
                 )
 
-            # Label Below Node (Readable Researcher Name)
-            name_parts = node["name"].split()
-            display_name = name_parts[-1] if len(name_parts) > 1 else node["name"]
+            # Format Readable Label Below Node
+            display_name = self._format_node_label(node["name"], nid)
             if is_selected:
                 text_color = "#92400E"
+                font_weight = "bold"
+            elif is_target:
+                text_color = "#6B21A8"
                 font_weight = "bold"
             elif is_in_path:
                 text_color = Theme.PURPLE
@@ -764,45 +1017,105 @@ class NetworkView(ctk.CTkFrame):
                 text_color = Theme.DARK_TEXT
                 font_weight = "normal"
 
+            label_y = y + node_radius + 11
+            # White mask pill behind label prevents any edge lines from cutting through text
+            approx_half_w = len(display_name) * 3.3 + 4
+            self.canvas.create_rectangle(
+                x - approx_half_w, label_y - 7,
+                x + approx_half_w, label_y + 7,
+                fill=Theme.WHITE, outline=""
+            )
             self.canvas.create_text(
-                x, y + node_radius + 12,
+                x, label_y,
                 text=display_name,
                 fill=text_color,
                 font=(Theme.FONT_FAMILY, 8, font_weight)
             )
 
+        # 4. DRAW HOVER TOOLTIP (IF A NODE IS HOVERED)
+        if self.hovered_node_id and self.hovered_node_id in self.nodes_by_id:
+            self._draw_hover_tooltip(self.hovered_node_id)
+
+    def _draw_hover_tooltip(self, nid: int):
+        """Draw an elegant canvas tooltip near the hovered node with full profile context."""
+        node = self.nodes_by_id[nid]
+        x, y = self.node_positions.get(nid, (0, 0))
+
+        full_name = node.get("name", "Researcher")
+        desig = node.get("designation") or "Researcher"
+        dept = node.get("department") or ""
+        inst = node.get("institution") or "CampusX"
+        neighbors = self.adjacency_map.get(nid, [])
+        collab_count = len(neighbors)
+        citations = node.get("citation_count", 0)
+
+        line1 = full_name
+        line2 = f"{desig} · {dept}" if dept else desig
+        line3 = f"🏛️ {inst}"
+        line4 = f"🤝 {collab_count} Direct Collaborators  ·  📑 {citations} Citations"
+        line5 = "Left-click: Select A  ·  Right-click: Set B"
+
+        lines = [line1, line2, line3, line4, line5]
+
+        # Calculate tooltip box placement
+        box_w = 260.0
+        box_h = 92.0
+        bx = min(x + 20, self.canvas_width - box_w - 10)
+        by = min(y - 30, self.canvas_height - box_h - 10)
+        if bx < 10:
+            bx = 10
+        if by < 10:
+            by = y + 25
+
+        # Background card with shadow effect
+        self.canvas.create_rectangle(bx + 2, by + 2, bx + box_w + 2, by + box_h + 2, fill="#E2E8F0", outline="")
+        self.canvas.create_rectangle(bx, by, bx + box_w, by + box_h, fill=Theme.WHITE, outline=Theme.BORDER, width=1.2)
+
+        # Text inside tooltip
+        self.canvas.create_text(bx + 10, by + 14, text=line1, anchor="w", fill=Theme.NAVY, font=(Theme.FONT_FAMILY, 9, "bold"))
+        self.canvas.create_text(bx + 10, by + 30, text=line2, anchor="w", fill=Theme.DARK_TEXT, font=(Theme.FONT_FAMILY, 8))
+        self.canvas.create_text(bx + 10, by + 46, text=line3, anchor="w", fill=Theme.SECONDARY_TEXT, font=(Theme.FONT_FAMILY, 7))
+        self.canvas.create_text(bx + 10, by + 63, text=line4, anchor="w", fill="#0369A1", font=(Theme.FONT_FAMILY, 7, "bold"))
+        self.canvas.create_text(bx + 10, by + 79, text=line5, anchor="w", fill="#64748B", font=(Theme.FONT_FAMILY, 7, "italic"))
+
     # =========================================================================
-    # INTERACTIVE CANVAS EVENTS (CLICK TO SELECT, MOUSE MOTION)
+    # INTERACTIVE CANVAS EVENTS (LEFT CLICK, RIGHT CLICK, HOVER)
     # =========================================================================
 
-    def _on_canvas_click(self, event):
-        """Clicking any node on the canvas selects that researcher as Researcher A."""
-        cx, cy = event.x, event.y
+    def _find_node_at_coords(self, cx: float, cy: float) -> Optional[int]:
         clicked_id = None
         min_dist = float("inf")
-
         for nid, (x, y) in self.node_positions.items():
             dist = math.hypot(cx - x, cy - y)
-            if dist <= 24 and dist < min_dist:
+            if dist <= 26.0 and dist < min_dist:
                 min_dist = dist
                 clicked_id = nid
+        return clicked_id
 
+    def _on_canvas_left_click(self, event):
+        """Left-click selects researcher as Researcher A (Source)."""
+        clicked_id = self._find_node_at_coords(event.x, event.y)
         if clicked_id:
             self._select_researcher_by_id(clicked_id, update_dropdown=True)
 
+    def _on_canvas_right_click(self, event):
+        """Right-click designates researcher as Researcher B (Target)."""
+        clicked_id = self._find_node_at_coords(event.x, event.y)
+        if clicked_id:
+            self._set_target_researcher_by_id(clicked_id, update_dropdown=True)
+
     def _on_canvas_motion(self, event):
-        """Changes mouse cursor to hand2 when hovering over a node."""
-        cx, cy = event.x, event.y
-        hovered = None
-
-        for nid, (x, y) in self.node_positions.items():
-            if math.hypot(cx - x, cy - y) <= 22:
-                hovered = nid
-                break
-
+        """Changes mouse cursor and shows live hover tooltip."""
+        hovered = self._find_node_at_coords(event.x, event.y)
         if hovered != self.hovered_node_id:
             self.hovered_node_id = hovered
             self.canvas.configure(cursor="hand2" if hovered else "")
+            self._draw_graph()
+
+    def _on_canvas_leave(self, event):
+        if self.hovered_node_id is not None:
+            self.hovered_node_id = None
+            self._draw_graph()
 
     # =========================================================================
     # RESEARCHER SELECTION & DETAILS UPDATE
@@ -810,12 +1123,12 @@ class NetworkView(ctk.CTkFrame):
 
     def _select_researcher_by_id(self, researcher_id: int, update_dropdown: bool = False):
         """
-        Activates a researcher as the Selected Researcher (Researcher A):
-        1. Highlights the node on the graph.
-        2. Identifies and highlights direct collaborators.
-        3. Updates the Selected Researcher details panel.
+        Activates a researcher as Researcher A (Source):
+        1. Highlights the node on the graph in Amber.
+        2. Identifies and highlights direct collaborators in Sky Blue.
+        3. Updates the Selected Researcher details panel with live MySQL data.
         4. Updates the Overview counter card.
-        5. Synchronizes the dropdown menu.
+        5. Synchronizes the Researcher A dropdown menu.
         """
         if researcher_id not in self.nodes_by_id:
             return
@@ -824,8 +1137,8 @@ class NetworkView(ctk.CTkFrame):
         res_data = self.nodes_by_id[researcher_id]
         name = res_data["name"]
 
-        if update_dropdown and name in self.name_to_id:
-            self.src_var.set(name)
+        if update_dropdown and researcher_id in self.id_to_label:
+            self.src_var.set(self.id_to_label[researcher_id])
 
         # Identify direct collaborators from adjacency map
         neighbor_tuples = self.adjacency_map.get(researcher_id, [])
@@ -844,26 +1157,78 @@ class NetworkView(ctk.CTkFrame):
         # Redraw graph
         self._draw_graph()
 
+    def _set_target_researcher_by_id(self, researcher_id: int, update_dropdown: bool = False):
+        """Designates a researcher as Researcher B (Target) and highlights in Violet."""
+        if researcher_id not in self.nodes_by_id:
+            return
+
+        self.target_node_id = researcher_id
+        if update_dropdown and researcher_id in self.id_to_label:
+            self.tgt_var.set(self.id_to_label[researcher_id])
+
+        # Clear old path highlights when target changes
+        self.highlighted_path_nodes.clear()
+        self.highlighted_path_edges.clear()
+        self._draw_graph()
+
+    def _set_current_selected_as_target(self):
+        """Button action in researcher details card to set currently viewed scholar as Target B."""
+        if self.selected_node_id:
+            self._set_target_researcher_by_id(self.selected_node_id, update_dropdown=True)
+
+    def _swap_researchers_a_and_b(self):
+        """Swap Researcher A and Researcher B selections."""
+        if not self.selected_node_id or not self.target_node_id:
+            return
+
+        old_a = self.selected_node_id
+        old_b = self.target_node_id
+
+        self.target_node_id = old_a
+        if old_a in self.id_to_label:
+            self.tgt_var.set(self.id_to_label[old_a])
+
+        self._select_researcher_by_id(old_b, update_dropdown=True)
+
     def _update_details_panel(self, researcher_id: int, node_data: Dict[str, Any], neighbors: List[Tuple[int, int]]):
-        """Populate the Selected Researcher panel with full academic profile and collaborator chips."""
+        """Populate the Selected Researcher panel with full academic profile, wrapped chips, and non-clipping text."""
         self.det_name_lbl.configure(text=node_data.get("name", "Researcher"))
 
-        # Fetch detailed profile from API/Service to get latest areas and skills
-        detailed_profile = {}
+        # Fetch detailed profile from API/Service for areas and skills
+        detailed_profile: Dict[str, Any] = {}
         try:
-            detailed_profile = api_client.get_researcher_detail(researcher_id)
+            detailed_profile = api_client.get_researcher_detail(researcher_id) or {}
         except Exception:
             try:
                 detailed_profile = ResearchService.get_researcher_detail(researcher_id) or {}
             except Exception:
                 detailed_profile = {}
 
-        desig = detailed_profile.get("designation") or node_data.get("designation", "Faculty Researcher")
-        dept = detailed_profile.get("department_name") or node_data.get("department", "Engineering")
-        inst = detailed_profile.get("institution_name") or node_data.get("institution", "CampusX")
-        self.det_meta_lbl.configure(text=f"{desig} · {dept}\n{inst}")
+        desig = detailed_profile.get("designation") or node_data.get("designation", "")
+        dept = detailed_profile.get("department_name") or node_data.get("department", "")
+        inst = detailed_profile.get("institution_name") or node_data.get("institution", "")
 
-        # 1. Direct Collaborators List
+        meta_parts = []
+        if desig and desig.strip():
+            meta_parts.append(desig.strip())
+        if dept and dept.strip():
+            meta_parts.append(dept.strip())
+        first_line = " · ".join(meta_parts) if meta_parts else "Academic Scholar"
+        inst_line = inst.strip() if (inst and inst.strip()) else "CampusX Academic Network"
+
+        self.det_meta_lbl.configure(text=f"{first_line}\n🏛️ {inst_line}")
+
+        # Metrics row
+        for child in self.metrics_row.winfo_children():
+            child.destroy()
+
+        cit_cnt = detailed_profile.get("citation_count", node_data.get("citation_count", 0))
+        pub_cnt = len(detailed_profile.get("publications", []))
+        create_badge(self.metrics_row, text=f"📑 {cit_cnt} Citations", bg_color="#F1F5F9", text_color=Theme.NAVY).pack(side="left", padx=(0, 4))
+        create_badge(self.metrics_row, text=f"📚 {pub_cnt} Papers", bg_color="#F1F5F9", text_color=Theme.NAVY).pack(side="left", padx=4)
+        create_badge(self.metrics_row, text=f"🤝 {len(neighbors)} Co-authors", bg_color="#E0F2FE", text_color="#0369A1").pack(side="left", padx=4)
+
+        # 1. Direct Collaborators List (Non-clipping, wrapped chip layout)
         num_collabs = len(neighbors)
         self.collab_sec_lbl.configure(text=f"Direct Collaborators ({num_collabs})")
 
@@ -871,43 +1236,70 @@ class NetworkView(ctk.CTkFrame):
             child.destroy()
 
         if neighbors:
+            curr_row = ctk.CTkFrame(self.collab_chips_frame, fg_color="transparent")
+            curr_row.pack(fill="x", pady=2)
+            curr_w = 0.0
+
             for neighbor_id, papers in neighbors:
                 collab_name = self.id_to_name.get(neighbor_id, f"Researcher #{neighbor_id}")
+                btn_text = f"{collab_name} ({papers} 📄)"
+                approx_w = len(btn_text) * 7.5 + 26.0
+
+                if curr_w > 0 and (curr_w + approx_w > 330.0):
+                    curr_row = ctk.CTkFrame(self.collab_chips_frame, fg_color="transparent")
+                    curr_row.pack(fill="x", pady=2)
+                    curr_w = 0.0
+
                 btn = ctk.CTkButton(
-                    self.collab_chips_frame,
-                    text=f"{collab_name} ({papers} 📄)",
+                    curr_row,
+                    text=btn_text,
                     command=lambda nid=neighbor_id: self._select_researcher_by_id(nid, update_dropdown=True),
-                    height=24,
-                    corner_radius=12,
+                    height=26,
+                    corner_radius=13,
                     fg_color="#E0F2FE",
                     text_color="#0369A1",
                     hover_color="#BAE6FD",
                     font=Theme.FONT_CAPTION
                 )
                 btn.pack(side="left", padx=3, pady=2)
+                curr_w += approx_w
         else:
             ctk.CTkLabel(
                 self.collab_chips_frame,
-                text="No direct collaborators recorded yet.",
+                text="ℹ️ No direct collaborators recorded in the campus network yet.",
                 font=Theme.FONT_CAPTION,
-                text_color=Theme.SECONDARY_TEXT
+                text_color=Theme.SECONDARY_TEXT,
+                wraplength=340,
+                justify="left"
             ).pack(anchor="w")
 
-        # 2. Research Areas Tags
+        # 2. Research Areas (Non-clipping, wrapped chip layout)
         for child in self.areas_chips_frame.winfo_children():
             child.destroy()
 
         areas = detailed_profile.get("areas", []) or node_data.get("areas", [])
         if areas:
+            curr_row = ctk.CTkFrame(self.areas_chips_frame, fg_color="transparent")
+            curr_row.pack(fill="x", pady=2)
+            curr_w = 0.0
+
             for area in areas:
                 area_text = area.get("name") if isinstance(area, dict) else str(area)
+                approx_w = len(area_text) * 7.2 + 22.0
+
+                if curr_w > 0 and (curr_w + approx_w > 330.0):
+                    curr_row = ctk.CTkFrame(self.areas_chips_frame, fg_color="transparent")
+                    curr_row.pack(fill="x", pady=2)
+                    curr_w = 0.0
+
                 create_badge(
-                    self.areas_chips_frame,
+                    curr_row,
                     text=area_text,
                     bg_color="#EEF2FF",
                     text_color=Theme.ACADEMIC_BLUE,
                     font=Theme.FONT_CAPTION
                 ).pack(side="left", padx=3, pady=2)
+                curr_w += approx_w
         else:
             ctk.CTkLabel(
                 self.areas_chips_frame,
@@ -916,21 +1308,33 @@ class NetworkView(ctk.CTkFrame):
                 text_color=Theme.SECONDARY_TEXT
             ).pack(anchor="w")
 
-        # 3. Skills Tags
+        # 3. Skills (Non-clipping, wrapped chip layout)
         for child in self.skills_chips_frame.winfo_children():
             child.destroy()
 
         skills = detailed_profile.get("skills", [])
         if skills:
-            for skill in skills[:6]:  # Show up to 6 skills
+            curr_row = ctk.CTkFrame(self.skills_chips_frame, fg_color="transparent")
+            curr_row.pack(fill="x", pady=2)
+            curr_w = 0.0
+
+            for skill in skills:
                 skill_name = skill.get("name") if isinstance(skill, dict) else str(skill)
+                approx_w = len(skill_name) * 7.2 + 22.0
+
+                if curr_w > 0 and (curr_w + approx_w > 330.0):
+                    curr_row = ctk.CTkFrame(self.skills_chips_frame, fg_color="transparent")
+                    curr_row.pack(fill="x", pady=2)
+                    curr_w = 0.0
+
                 create_badge(
-                    self.skills_chips_frame,
+                    curr_row,
                     text=skill_name,
                     bg_color="#F1F5F9",
                     text_color=Theme.NAVY,
                     font=Theme.FONT_CAPTION
                 ).pack(side="left", padx=3, pady=2)
+                curr_w += approx_w
         else:
             ctk.CTkLabel(
                 self.skills_chips_frame,
@@ -948,19 +1352,15 @@ class NetworkView(ctk.CTkFrame):
     # DROPDOWN EVENT HANDLERS
     # =========================================================================
 
-    def _on_src_dropdown_change(self, selected_name: str):
-        nid = self.name_to_id.get(selected_name)
+    def _on_src_dropdown_change(self, selected_label: str):
+        nid = self.label_to_id.get(selected_label)
         if nid:
             self._select_researcher_by_id(nid, update_dropdown=False)
 
-    def _on_tgt_dropdown_change(self, selected_name: str):
-        nid = self.name_to_id.get(selected_name)
+    def _on_tgt_dropdown_change(self, selected_label: str):
+        nid = self.label_to_id.get(selected_label)
         if nid:
-            self.target_node_id = nid
-            # Clear old shortest path when target changes
-            self.highlighted_path_nodes.clear()
-            self.highlighted_path_edges.clear()
-            self._draw_graph()
+            self._set_target_researcher_by_id(nid, update_dropdown=False)
 
     # =========================================================================
     # ALGORITHM 1: SHORTEST COLLABORATION PATH (BFS)
@@ -968,67 +1368,168 @@ class NetworkView(ctk.CTkFrame):
 
     def _run_bfs_shortest_path(self):
         """Calculate and highlight the real shortest collaboration path using BFS."""
-        src_name = self.src_var.get()
-        tgt_name = self.tgt_var.get()
-        src_id = self.name_to_id.get(src_name)
-        tgt_id = self.name_to_id.get(tgt_name)
+        src_id = self.selected_node_id or self.label_to_id.get(self.src_var.get())
+        tgt_id = self.target_node_id or self.label_to_id.get(self.tgt_var.get())
 
         if not src_id or not tgt_id:
-            self.res_title.configure(text="Invalid Selection")
-            self.res_content.configure(text="Please select valid researchers from the dropdowns.")
+            self.algo_badge.configure(text="Invalid Selection", fg_color="#FEE2E2", text_color="#B91C1C")
+            self.res_title.configure(text="Select Both Researchers")
+            self._render_plain_result("Please select valid researchers from both dropdown menus above.")
             return
 
         self.target_node_id = tgt_id
 
+        # Execute BFS algorithm via API / Service
         try:
             res = api_client.run_bfs(src_id, tgt_id)
         except Exception:
             try:
                 res = NetworkService.execute_bfs_path(src_id, tgt_id)
             except Exception as e:
-                self.res_title.configure(text="BFS Execution Error")
-                self.res_content.configure(text=f"An error occurred: {str(e)}")
+                self.algo_badge.configure(text="Execution Error", fg_color="#FEE2E2", text_color="#B91C1C")
+                self.res_title.configure(text="BFS Error")
+                self._render_plain_result(f"An error occurred executing BFS: {str(e)}")
                 return
+
+        src_name = self.id_to_name.get(src_id, f"Researcher #{src_id}")
+        tgt_name = self.id_to_name.get(tgt_id, f"Researcher #{tgt_id}")
+
+        for child in self.res_body_container.winfo_children():
+            child.destroy()
+
+        if src_id == tgt_id:
+            self.highlighted_path_nodes = {src_id}
+            self.highlighted_path_edges.clear()
+            self._draw_graph()
+
+            self.algo_badge.configure(text="Self-Connection", fg_color="#FEF3C7", text_color="#B45309")
+            self.res_title.configure(text="Same Researcher Selected (0 Hops)")
+
+            ctk.CTkLabel(
+                self.res_body_container,
+                text=f"Researcher A and Researcher B are the same scholar ({src_name}).",
+                font=Theme.FONT_BODY,
+                text_color=Theme.NAVY
+            ).pack(anchor="w", pady=(0, 4))
+            ctk.CTkLabel(
+                self.res_body_container,
+                text="Degrees of Separation: 0\nCollaboration Edges Traversed: 0",
+                font=Theme.FONT_CAPTION,
+                text_color=Theme.SECONDARY_TEXT
+            ).pack(anchor="w")
+            return
 
         if res.get("found"):
             path = res.get("path_ids", [])
+            hops = res.get("hops", len(path) - 1)
+            edges_info = res.get("edges", [])
+
             self.highlighted_path_nodes = set(path)
             self.highlighted_path_edges = {
-                (min(path[i], path[i+1]), max(path[i], path[i+1]))
-                for i in range(len(path)-1)
+                (min(path[i], path[i + 1]), max(path[i], path[i + 1]))
+                for i in range(len(path) - 1)
             }
             self.highlighted_traversal_steps.clear()
             self.highlighted_cluster_nodes.clear()
             self._draw_graph()
 
-            hops = res.get("hops", len(path) - 1)
-            chain = " → ".join(n["name"] for n in res.get("path_nodes", []))
-
             self.algo_badge.configure(text="BFS Path Found", fg_color="#F3E8FF", text_color=Theme.PURPLE)
-            self.res_title.configure(text=f"Shortest Collaboration Path ({hops} Degree{'s' if hops != 1 else ''} of Separation)")
+            self.res_title.configure(text=f"Shortest Path Found ({hops} Degree{'s' if hops != 1 else ''} of Separation)")
 
-            out = f"Collaboration Chain:\n{chain}\n\n"
-            out += f"Path Length: {hops} collaboration{'s' if hops != 1 else ''}\n\n"
-            out += "Step-by-step Joint Co-authorship Links:\n"
-            for edge in res.get("edges", []):
-                out += f"• {edge['from_name']} 🤝 {edge['to_name']}: {edge.get('paper_count', 1)} joint paper(s)\n"
+            # Summary Metric Badges Frame
+            metrics_box = ctk.CTkFrame(self.res_body_container, fg_color="transparent")
+            metrics_box.pack(fill="x", pady=(0, 8))
+            create_badge(metrics_box, text=f"Edges Traversed: {hops}", bg_color="#F3E8FF", text_color=Theme.PURPLE).pack(side="left", padx=(0, 4))
+            create_badge(metrics_box, text=f"Total Nodes: {len(path)} Scholars", bg_color="#EEF2FF", text_color=Theme.ACADEMIC_BLUE).pack(side="left", padx=4)
+            total_papers = sum(e.get("paper_count", 1) for e in edges_info)
+            create_badge(metrics_box, text=f"Joint Papers: {total_papers}", bg_color="#E0F2FE", text_color="#0369A1").pack(side="left", padx=4)
 
-            out += "\nGraph Theory Rationale:\n"
-            out += "Breadth-First Search (BFS) explores all neighbors at distance d before moving to d+1, mathematically guaranteeing the shortest collaborative chain."
+            # Collaboration Chain Display
+            ctk.CTkLabel(self.res_body_container, text="Collaboration Chain:", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
+            chain_names = [self.id_to_name.get(nid, f"#{nid}") for nid in path]
+            chain_box = ctk.CTkFrame(self.res_body_container, fg_color="#FAF5FF", corner_radius=6)
+            chain_box.pack(fill="x", pady=(0, 8))
+            ctk.CTkLabel(
+                chain_box,
+                text=" ➔ ".join(chain_names),
+                font=Theme.FONT_BODY_BOLD,
+                text_color=Theme.PURPLE,
+                wraplength=330,
+                justify="left"
+            ).pack(anchor="w", padx=10, pady=8)
 
-            self.res_content.configure(text=out)
+            # Step-by-step links
+            ctk.CTkLabel(self.res_body_container, text="Step-by-Step Co-authorship Links:", font=Theme.FONT_BODY_BOLD, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(2, 2))
+            for idx, edge in enumerate(edges_info):
+                step_card = ctk.CTkFrame(self.res_body_container, fg_color="#F8FAFC", corner_radius=6)
+                step_card.pack(fill="x", pady=2)
+                step_text = f"Step {idx + 1}: {edge.get('from_name')} 🤝 {edge.get('to_name')}"
+                paper_text = f"{edge.get('paper_count', 1)} joint paper(s)"
+                ctk.CTkLabel(step_card, text=step_text, font=Theme.FONT_BODY_BOLD, text_color=Theme.NAVY).pack(anchor="w", padx=8, pady=(4, 0))
+                ctk.CTkLabel(step_card, text=f"Collaborative evidence: {paper_text}", font=Theme.FONT_CAPTION, text_color=Theme.SECONDARY_TEXT).pack(anchor="w", padx=8, pady=(0, 4))
+
+            # Graph Theory Rationale
+            rationale_box = ctk.CTkFrame(self.res_body_container, fg_color="transparent")
+            rationale_box.pack(fill="x", pady=(8, 0))
+            ctk.CTkLabel(rationale_box, text="Graph Theory Rationale:", font=Theme.FONT_CAPTION, text_color=Theme.SECONDARY_TEXT).pack(anchor="w")
+            ctk.CTkLabel(
+                rationale_box,
+                text="Breadth-First Search (BFS) explores all neighbors at degree d before moving to d+1, mathematically guaranteeing the shortest collaboration chain.",
+                font=Theme.FONT_CAPTION,
+                text_color=Theme.SECONDARY_TEXT,
+                wraplength=340,
+                justify="left"
+            ).pack(anchor="w")
+
         else:
+            # No path exists
             self.highlighted_path_nodes.clear()
             self.highlighted_path_edges.clear()
             self._draw_graph()
 
             self.algo_badge.configure(text="No Path", fg_color="#FEE2E2", text_color="#B91C1C")
             self.res_title.configure(text="No Collaboration Path Exists")
-            self.res_content.configure(
+
+            metrics_box = ctk.CTkFrame(self.res_body_container, fg_color="transparent")
+            metrics_box.pack(fill="x", pady=(0, 8))
+            create_badge(metrics_box, text="Edges Traversed: 0", bg_color="#FEE2E2", text_color="#B91C1C").pack(side="left", padx=(0, 4))
+            create_badge(metrics_box, text="Connection: Disconnected", bg_color="#FEE2E2", text_color="#B91C1C").pack(side="left", padx=4)
+
+            err_card = ctk.CTkFrame(self.res_body_container, fg_color="#FEF2F2", corner_radius=6)
+            err_card.pack(fill="x", pady=(0, 8))
+            ctk.CTkLabel(
+                err_card,
                 text=f"No collaboration path exists between {src_name} and {tgt_name}.\n\n"
-                     "They belong to disconnected research clusters in the academic network graph. "
-                     "No joint publications or transitive co-authors connect these two scholars."
-            )
+                     "They belong to disconnected research clusters in the academic graph. "
+                     "No joint publications or transitive co-authors connect these two scholars.",
+                font=Theme.FONT_BODY,
+                text_color="#991B1B",
+                wraplength=330,
+                justify="left"
+            ).pack(anchor="w", padx=10, pady=8)
+
+            ctk.CTkLabel(
+                self.res_body_container,
+                text="Algorithmic Proof:\n"
+                     "BFS completely traversed the reachable component of the source researcher without encountering the target. "
+                     "Both nodes are displayed on the graph without inventing false collaboration edges.",
+                font=Theme.FONT_CAPTION,
+                text_color=Theme.SECONDARY_TEXT,
+                wraplength=340,
+                justify="left"
+            ).pack(anchor="w")
+
+    def _render_plain_result(self, text: str):
+        for child in self.res_body_container.winfo_children():
+            child.destroy()
+        ctk.CTkLabel(
+            self.res_body_container,
+            text=text,
+            font=Theme.FONT_BODY,
+            text_color=Theme.DARK_TEXT,
+            wraplength=340,
+            justify="left"
+        ).pack(anchor="w")
 
     # =========================================================================
     # ALGORITHM 2: BFS TRAVERSAL (LEVEL-BY-LEVEL EXPLORATION)
@@ -1036,8 +1537,7 @@ class NetworkView(ctk.CTkFrame):
 
     def _run_bfs_traversal(self):
         """Run level-by-level BFS traversal starting from Researcher A."""
-        src_name = self.src_var.get()
-        src_id = self.name_to_id.get(src_name)
+        src_id = self.selected_node_id or self.label_to_id.get(self.src_var.get())
 
         if not src_id:
             return
@@ -1048,9 +1548,13 @@ class NetworkView(ctk.CTkFrame):
             try:
                 traversal = NetworkService.get_bfs_traversal(src_id)
             except Exception as e:
+                self.algo_badge.configure(text="Traversal Error", fg_color="#FEE2E2", text_color="#B91C1C")
                 self.res_title.configure(text="BFS Traversal Error")
-                self.res_content.configure(text=f"Error: {str(e)}")
+                self._render_plain_result(f"Error: {str(e)}")
                 return
+
+        for child in self.res_body_container.winfo_children():
+            child.destroy()
 
         if traversal:
             self.highlighted_traversal_steps = {item["id"]: item["step"] for item in traversal}
@@ -1059,22 +1563,45 @@ class NetworkView(ctk.CTkFrame):
             self.highlighted_cluster_nodes.clear()
             self._draw_graph()
 
+            src_name = self.id_to_name.get(src_id, f"Researcher #{src_id}")
+            max_depth = max(item.get("depth", 0) for item in traversal)
+
             self.algo_badge.configure(text="BFS Traversal", fg_color="#E0F2FE", text_color="#0369A1")
-            self.res_title.configure(text=f"BFS Level-by-Level Traversal ({len(traversal)} Visited)")
+            self.res_title.configure(text=f"BFS Level-by-Level ({len(traversal)} Visited)")
 
-            out = f"Starting Scholar: {src_name}\n"
-            out += "Traversal Order (Level-by-Level):\n\n"
-            for item in traversal[:12]:
-                depth_label = f"Level {item.get('depth', 0)}" if item.get("depth", 0) > 0 else "Source (Level 0)"
-                out += f"{item['step']}. {item['name']} ({depth_label})\n"
+            # Stats badges
+            stat_box = ctk.CTkFrame(self.res_body_container, fg_color="transparent")
+            stat_box.pack(fill="x", pady=(0, 8))
+            create_badge(stat_box, text=f"Scholars Visited: {len(traversal)}", bg_color="#E0F2FE", text_color="#0369A1").pack(side="left", padx=(0, 4))
+            create_badge(stat_box, text=f"Max Level: {max_depth}", bg_color="#EEF2FF", text_color=Theme.ACADEMIC_BLUE).pack(side="left", padx=4)
 
-            if len(traversal) > 12:
-                out += f"... and {len(traversal) - 12} more researchers.\n"
+            ctk.CTkLabel(self.res_body_container, text=f"Starting Scholar: {src_name}", font=Theme.FONT_BODY_BOLD, text_color=Theme.NAVY).pack(anchor="w", pady=(0, 6))
 
-            out += "\nAlgorithmic Behavior:\n"
-            out += "BFS explores the collaboration network level-by-level starting from the selected researcher, visiting 1st-degree co-authors first, then 2nd-degree mutual collaborators."
+            # Group researchers by depth/level
+            levels: Dict[int, List[Dict[str, Any]]] = {}
+            for item in traversal:
+                d = item.get("depth", 0)
+                levels.setdefault(d, []).append(item)
 
-            self.res_content.configure(text=out)
+            for d in sorted(levels.keys()):
+                lvl_card = ctk.CTkFrame(self.res_body_container, fg_color="#F8FAFC", corner_radius=6)
+                lvl_card.pack(fill="x", pady=2)
+                lvl_title = "Level 0 (Source)" if d == 0 else (f"Level {d} (Direct Co-authors)" if d == 1 else f"Level {d} (Mutual Collaborators)")
+                ctk.CTkLabel(lvl_card, text=lvl_title, font=Theme.FONT_BODY_BOLD, text_color=Theme.ACADEMIC_BLUE).pack(anchor="w", padx=8, pady=(4, 2))
+
+                members_text = ", ".join(f"[#{it['step']}] {it['name']}" for it in levels[d])
+                ctk.CTkLabel(lvl_card, text=members_text, font=Theme.FONT_CAPTION, text_color=Theme.DARK_TEXT, wraplength=325, justify="left").pack(anchor="w", padx=8, pady=(0, 4))
+
+            # Rationale
+            ctk.CTkLabel(
+                self.res_body_container,
+                text="\nAlgorithmic Behavior:\n"
+                     "BFS uses a FIFO (First-In, First-Out) queue. It completely explores all 1st-degree co-authors before branching to 2nd-degree mutual collaborators.",
+                font=Theme.FONT_CAPTION,
+                text_color=Theme.SECONDARY_TEXT,
+                wraplength=340,
+                justify="left"
+            ).pack(anchor="w")
 
     # =========================================================================
     # ALGORITHM 3: DFS TRAVERSAL (DEEP EXPLORATION)
@@ -1082,8 +1609,7 @@ class NetworkView(ctk.CTkFrame):
 
     def _run_dfs_traversal(self):
         """Run recursive DFS traversal starting from Researcher A."""
-        src_name = self.src_var.get()
-        src_id = self.name_to_id.get(src_name)
+        src_id = self.selected_node_id or self.label_to_id.get(self.src_var.get())
 
         if not src_id:
             return
@@ -1094,9 +1620,13 @@ class NetworkView(ctk.CTkFrame):
             try:
                 traversal = NetworkService.get_dfs_traversal(src_id)
             except Exception as e:
+                self.algo_badge.configure(text="Traversal Error", fg_color="#FEE2E2", text_color="#B91C1C")
                 self.res_title.configure(text="DFS Traversal Error")
-                self.res_content.configure(text=f"Error: {str(e)}")
+                self._render_plain_result(f"Error: {str(e)}")
                 return
+
+        for child in self.res_body_container.winfo_children():
+            child.destroy()
 
         if traversal:
             self.highlighted_traversal_steps = {item["id"]: item["step"] for item in traversal}
@@ -1105,65 +1635,133 @@ class NetworkView(ctk.CTkFrame):
             self.highlighted_cluster_nodes.clear()
             self._draw_graph()
 
-            self.algo_badge.configure(text="DFS Traversal", fg_color="#FEF3C7", text_color="#B45309")
-            self.res_title.configure(text=f"DFS Deep Traversal ({len(traversal)} Visited)")
+            src_name = self.id_to_name.get(src_id, f"Researcher #{src_id}")
+            max_depth = max(item.get("depth", 0) for item in traversal)
 
-            out = f"Starting Scholar: {src_name}\n"
-            out += "Traversal Order (Depth-First):\n\n"
-            for item in traversal[:12]:
-                depth_label = f"Depth {item.get('depth', 0)}"
-                out += f"{item['step']}. {item['name']} ({depth_label})\n"
+            self.algo_badge.configure(text="DFS Deep Search", fg_color="#FEF3C7", text_color="#B45309")
+            self.res_title.configure(text=f"DFS Exploration ({len(traversal)} Visited)")
 
-            if len(traversal) > 12:
-                out += f"... and {len(traversal) - 12} more researchers.\n"
+            stat_box = ctk.CTkFrame(self.res_body_container, fg_color="transparent")
+            stat_box.pack(fill="x", pady=(0, 8))
+            create_badge(stat_box, text=f"Scholars Visited: {len(traversal)}", bg_color="#FEF3C7", text_color="#B45309").pack(side="left", padx=(0, 4))
+            create_badge(stat_box, text=f"Max Branch Depth: {max_depth}", bg_color="#EEF2FF", text_color=Theme.ACADEMIC_BLUE).pack(side="left", padx=4)
 
-            out += "\nAlgorithmic Behavior:\n"
-            out += "DFS explores one collaboration path deeply using a recursive LIFO call stack before backtracking to explore other connected researchers."
+            ctk.CTkLabel(self.res_body_container, text=f"Starting Scholar: {src_name}", font=Theme.FONT_BODY_BOLD, text_color=Theme.NAVY).pack(anchor="w", pady=(0, 6))
 
-            self.res_content.configure(text=out)
+            # Display sequential exploration
+            for item in traversal[:10]:
+                step_card = ctk.CTkFrame(self.res_body_container, fg_color="#F8FAFC", corner_radius=6)
+                step_card.pack(fill="x", pady=2)
+                d_indent = "  " * min(item.get("depth", 0), 4)
+                ctk.CTkLabel(
+                    step_card,
+                    text=f"{d_indent}[Step {item['step']}] {item['name']} (Depth {item.get('depth', 0)})",
+                    font=Theme.FONT_BODY_BOLD,
+                    text_color=Theme.DARK_TEXT
+                ).pack(anchor="w", padx=8, pady=4)
+
+            if len(traversal) > 10:
+                ctk.CTkLabel(self.res_body_container, text=f"... and {len(traversal) - 10} more scholars in branch.", font=Theme.FONT_CAPTION, text_color=Theme.SECONDARY_TEXT).pack(anchor="w", pady=2)
+
+            ctk.CTkLabel(
+                self.res_body_container,
+                text="\nAlgorithmic Behavior:\n"
+                     "DFS uses a LIFO (Last-In, First-Out) recursion stack. It plunges down a single collaborative branch as deeply as possible before backtracking.",
+                font=Theme.FONT_CAPTION,
+                text_color=Theme.SECONDARY_TEXT,
+                wraplength=340,
+                justify="left"
+            ).pack(anchor="w")
 
     # =========================================================================
     # ALGORITHM 4: CONNECTED COMPONENTS / RESEARCH CLUSTERS
     # =========================================================================
 
     def _run_clusters(self):
-        """Detect and display connected components (research clusters) across campus."""
+        """Detect and display connected components (research clusters) across campus using DFS."""
         try:
             clusters = api_client.get_clusters()
         except Exception:
             try:
                 clusters = NetworkService.get_research_clusters()
             except Exception as e:
+                self.algo_badge.configure(text="Cluster Error", fg_color="#FEE2E2", text_color="#B91C1C")
                 self.res_title.configure(text="Cluster Detection Error")
-                self.res_content.configure(text=f"Error: {str(e)}")
+                self._render_plain_result(f"Error: {str(e)}")
                 return
 
         self.clusters = clusters
+        for child in self.res_body_container.winfo_children():
+            child.destroy()
+
         self.algo_badge.configure(text="Connected Components", fg_color="#DCFCE7", text_color="#15803D")
-        self.res_title.configure(text=f"Research Collaboration Clusters ({len(clusters)} Components)")
+        self.res_title.configure(text=f"Research Clusters ({len(clusters)} Components)")
 
-        out = f"Detected {len(clusters)} connected components across the campus graph:\n\n"
-        for c in clusters[:6]:
-            lead = c.get("lead_researcher", "Campus Scholar")
-            size = c.get("size", len(c.get("member_ids", [])))
-            areas = ", ".join(c.get("dominant_areas", [])[:2]) or "Interdisciplinary"
-            out += f"• Cluster #{c['cluster_id']}: {size} Researchers\n"
-            out += f"  Lead Scholar: {lead}\n"
-            out += f"  Dominant Fields: {areas}\n\n"
+        # Summary box
+        stat_box = ctk.CTkFrame(self.res_body_container, fg_color="transparent")
+        stat_box.pack(fill="x", pady=(0, 8))
+        create_badge(stat_box, text=f"Components: {len(clusters)}", bg_color="#DCFCE7", text_color="#15803D").pack(side="left", padx=(0, 4))
 
-        out += "Graph Theory Concept:\n"
-        out += "A connected component is a maximal subgraph where any two researchers are connected by at least one collaborative path."
+        # Main cluster vs isolated
+        main_cluster = clusters[0] if clusters else None
+        if main_cluster and main_cluster.get("size", 0) > 1:
+            mc_card = ctk.CTkFrame(self.res_body_container, fg_color="#F0FDF4", corner_radius=6)
+            mc_card.pack(fill="x", pady=(0, 8))
+            ctk.CTkLabel(mc_card, text=f"Main Collaboration Network (Cluster #1)", font=Theme.FONT_BODY_BOLD, text_color="#166534").pack(anchor="w", padx=10, pady=(6, 2))
+            lead = main_cluster.get("lead_researcher", "Campus Scholar")
+            size = main_cluster.get("size", 0)
+            areas = ", ".join(main_cluster.get("dominant_areas", [])[:3]) or "Interdisciplinary"
+            ctk.CTkLabel(mc_card, text=f"• {size} Connected Researchers\n• Lead Scholar: {lead}\n• Dominant Fields: {areas}", font=Theme.FONT_CAPTION, text_color="#15803D", justify="left").pack(anchor="w", padx=10, pady=(0, 6))
 
-        # Highlight primary largest cluster members
-        if clusters:
-            primary_members = clusters[0].get("member_ids", [])
-            self.highlighted_cluster_nodes = set(primary_members)
-            self.highlighted_path_nodes.clear()
-            self.highlighted_path_edges.clear()
-            self.highlighted_traversal_steps.clear()
-            self._draw_graph()
+            # Action button to highlight main cluster on canvas
+            highlight_btn = ctk.CTkButton(
+                mc_card,
+                text="Highlight Main Network on Graph",
+                command=lambda: self._highlight_cluster(main_cluster.get("member_ids", [])),
+                height=24,
+                corner_radius=4,
+                fg_color="#16A34A",
+                text_color=Theme.WHITE,
+                font=Theme.FONT_CAPTION
+            )
+            highlight_btn.pack(anchor="w", padx=10, pady=(0, 8))
 
-        self.res_content.configure(text=out)
+        isolated_count = sum(1 for c in clusters if c.get("size", 0) == 1)
+        if isolated_count > 0:
+            iso_card = ctk.CTkFrame(self.res_body_container, fg_color="#F8FAFC", corner_radius=6)
+            iso_card.pack(fill="x", pady=(0, 8))
+            ctk.CTkLabel(iso_card, text=f"Independent Scholars ({isolated_count} Components)", font=Theme.FONT_BODY_BOLD, text_color=Theme.NAVY).pack(anchor="w", padx=10, pady=(6, 2))
+            ctk.CTkLabel(
+                iso_card,
+                text="Researchers who have not yet co-authored joint papers in this database. "
+                     "Displayed cleanly on the right shelf without inventing false edges.",
+                font=Theme.FONT_CAPTION,
+                text_color=Theme.SECONDARY_TEXT,
+                wraplength=325,
+                justify="left"
+            ).pack(anchor="w", padx=10, pady=(0, 6))
+
+        # Algorithmic explanation
+        ctk.CTkLabel(
+            self.res_body_container,
+            text="Graph Theory Rationale:\n"
+                 "A connected component is an equivalence class under mutual reachability, detected across the entire graph using DFS component labeling.",
+            font=Theme.FONT_CAPTION,
+            text_color=Theme.SECONDARY_TEXT,
+            wraplength=340,
+            justify="left"
+        ).pack(anchor="w")
+
+        # Automatically highlight primary cluster
+        if main_cluster:
+            self._highlight_cluster(main_cluster.get("member_ids", []))
+
+    def _highlight_cluster(self, member_ids: List[int]):
+        self.highlighted_cluster_nodes = set(member_ids)
+        self.highlighted_path_nodes.clear()
+        self.highlighted_path_edges.clear()
+        self.highlighted_traversal_steps.clear()
+        self._draw_graph()
 
     # =========================================================================
     # RESET NETWORK VIEW
@@ -1176,16 +1774,25 @@ class NetworkView(ctk.CTkFrame):
         self.highlighted_traversal_steps.clear()
         self.highlighted_cluster_nodes.clear()
 
-        # Re-highlight currently selected node and its direct collaborators
-        if self.selected_node_id:
-            neighbors = self.adjacency_map.get(self.selected_node_id, [])
-            self.highlighted_collaborators = {v for v, _ in neighbors}
+        # Restore default Researcher A and B
+        nodes = self.graph_data.get("nodes", [])
+        default_a = self.current_researcher_id or (nodes[0]["id"] if nodes else None)
+        default_b = None
+        if nodes:
+            for n in nodes:
+                if n["id"] != default_a:
+                    default_b = n["id"]
+                    break
+            if default_b is None:
+                default_b = default_a
+
+        if default_a:
+            self._select_researcher_by_id(default_a, update_dropdown=True)
+        if default_b:
+            self._set_target_researcher_by_id(default_b, update_dropdown=True)
 
         self._draw_graph()
 
         self.algo_badge.configure(text="Normal Graph", fg_color="#EEF2FF", text_color=Theme.ACADEMIC_BLUE)
         self.res_title.configure(text="Network Graph Reset")
-        self.res_content.configure(
-            text="Highlights cleared. The graph shows the standard academic collaboration topology. "
-                 "Select researchers above to execute shortest path or traversals."
-        )
+        self._set_default_result_message()

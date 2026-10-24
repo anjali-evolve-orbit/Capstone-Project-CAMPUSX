@@ -114,15 +114,16 @@ class MySQLDatabase:
         query: str,
         params: Optional[Union[Tuple, Dict]] = None
     ) -> int:
-        """Execute an INSERT, UPDATE, or DELETE query and return the last row ID."""
+        """Execute an INSERT, UPDATE, or DELETE query and return the last row ID (for INSERT) or affected row count (for UPDATE/DELETE)."""
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
             cursor.execute(query, params or ())
             last_id = cursor.lastrowid
+            row_count = cursor.rowcount
             conn.commit()
             cursor.close()
-            return last_id
+            return last_id if (last_id is not None and last_id > 0) else row_count
         finally:
             conn.close()
 

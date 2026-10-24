@@ -57,12 +57,26 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+    confirm_password: str
+
+
 class RecommendationRequest(BaseModel):
     interests: List[str]
     department: Optional[str] = None
     institution: Optional[str] = None
     exclude_id: Optional[int] = None
     limit: int = 6
+
+
+class CommunityActionRequest(BaseModel):
+    user_id: int
 
 
 # --- Routes ---
@@ -107,6 +121,32 @@ def login_user(req: LoginRequest):
         if not ok:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=msg)
         return {"success": True, "message": msg, "user": user}
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
+@app.post("/api/auth/forgot-password")
+def forgot_password_endpoint(req: ForgotPasswordRequest):
+    try:
+        res = AuthService.request_password_reset(req.email)
+        return res
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@app.post("/api/auth/reset-password")
+def reset_password_endpoint(req: ResetPasswordRequest):
+    try:
+        ok, msg = AuthService.reset_password(
+            token=req.token,
+            new_password=req.new_password,
+            confirm_password=req.confirm_password
+        )
+        if not ok:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+        return {"success": True, "message": msg}
     except DatabaseConnectionError as err:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
 
@@ -258,6 +298,22 @@ class CreatePaperRequest(BaseModel):
     author_ids: Optional[List[int]] = None
 
 
+class UpdatePaperRequest(BaseModel):
+    current_researcher_id: int
+    title: Optional[str] = None
+    publication_year: Optional[int] = None
+    venue: Optional[str] = None
+    doi: Optional[str] = None
+    url: Optional[str] = None
+    abstract: Optional[str] = None
+    primary_area_id: Optional[int] = None
+    research_area_ids: Optional[List[int]] = None
+
+
+class DeletePaperRequest(BaseModel):
+    current_researcher_id: int
+
+
 @app.post("/api/papers")
 def create_paper(req: CreatePaperRequest):
     try:
@@ -280,7 +336,49 @@ def create_paper(req: CreatePaperRequest):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
 
 
+@app.put("/api/papers/{paper_id}")
+def update_paper_endpoint(paper_id: int, req: UpdatePaperRequest):
+    """Update a paper. Only authorized authors (paper_authors) may edit."""
+    try:
+        updates = {
+            "title": req.title,
+            "publication_year": req.publication_year,
+            "venue": req.venue,
+            "doi": req.doi,
+            "url": req.url,
+            "abstract": req.abstract,
+            "primary_area_id": req.primary_area_id,
+            "research_area_ids": req.research_area_ids,
+        }
+        # Strip None keys so existing values are preserved
+        updates = {k: v for k, v in updates.items() if v is not None}
+        ok, msg, paper = ResearchService.update_paper(paper_id, req.current_researcher_id, updates)
+        if not ok:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=msg)
+        return {"success": True, "message": msg, "paper": paper}
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
+@app.delete("/api/papers/{paper_id}")
+def delete_paper_endpoint(paper_id: int, req: DeletePaperRequest):
+    """Delete a paper. Only authorized authors (paper_authors) may delete."""
+    try:
+        ok, msg = ResearchService.delete_paper(paper_id, req.current_researcher_id)
+        if not ok:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=msg)
+        return {"success": True, "message": msg}
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
 # 6. Research Areas Endpoints
+class CreateResearchAreaRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    icon_name: Optional[str] = "AcademicCap"
+
+
 @app.get("/api/research-areas")
 def list_research_areas():
     try:
@@ -289,14 +387,71 @@ def list_research_areas():
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
 
 
+@app.post("/api/research-areas")
+def create_research_area_endpoint(req: CreateResearchAreaRequest):
+    try:
+        area = ResearchService.create_research_area(
+            name=req.name,
+            description=req.description,
+            icon_name=req.icon_name
+        )
+        return {"success": True, "area": area}
+    except ValueError as err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
 # 7. Communities Endpoints
 @app.get("/api/communities")
 def list_communities(
     institution_id: Optional[int] = Query(None),
-    search: Optional[str] = Query(None)
+    search: Optional[str] = Query(None),
+    user_id: Optional[int] = Query(None)
 ):
     try:
-        return ResearchService.get_communities(institution_id, search)
+        return ResearchService.get_communities(institution_id, search, user_id)
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
+@app.get("/api/communities/my/joined")
+def list_my_communities(user_id: int = Query(...)):
+    try:
+        return ResearchService.get_user_communities(user_id)
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
+@app.get("/api/communities/{community_id}")
+def get_community_detail(community_id: int, user_id: Optional[int] = Query(None)):
+    try:
+        detail = ResearchService.get_community_detail(community_id, user_id)
+        if not detail:
+            raise HTTPException(status_code=404, detail="Community not found")
+        return detail
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
+@app.post("/api/communities/{community_id}/join")
+def join_community_endpoint(community_id: int, req: CommunityActionRequest):
+    try:
+        ok, msg, data = ResearchService.join_community(community_id, req.user_id)
+        if not ok:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+        return {"success": True, "message": msg, "data": data}
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
+@app.post("/api/communities/{community_id}/leave")
+def leave_community_endpoint(community_id: int, req: CommunityActionRequest):
+    try:
+        ok, msg, data = ResearchService.leave_community(community_id, req.user_id)
+        if not ok:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+        return {"success": True, "message": msg, "data": data}
     except DatabaseConnectionError as err:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
 
@@ -370,5 +525,132 @@ def get_recommendations(req: RecommendationRequest):
 def search_all(q: str = Query(...)):
     try:
         return NetworkService.global_search(q)
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
+# 11. Researcher Connection Endpoints (Part 5)
+class SendConnectionRequest(BaseModel):
+    sender_researcher_id: int
+    receiver_researcher_id: int
+
+
+class ConnectionActionRequest(BaseModel):
+    current_researcher_id: int
+
+
+@app.post("/api/connections/request")
+def send_connection_request_endpoint(req: SendConnectionRequest):
+    try:
+        ok, msg, data = ResearchService.send_connection_request(
+            req.sender_researcher_id,
+            req.receiver_researcher_id
+        )
+        if not ok:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+        return {"success": True, "message": msg, "data": data}
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
+@app.get("/api/connections/status")
+def get_connection_status_endpoint(current_id: int = Query(...), target_id: int = Query(...)):
+    try:
+        return ResearchService.get_connection_status(current_id, target_id)
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
+@app.get("/api/connections/sent")
+def get_sent_requests_endpoint(researcher_id: int = Query(...)):
+    try:
+        return ResearchService.get_sent_connection_requests(researcher_id)
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
+@app.get("/api/connections/received")
+def get_received_requests_endpoint(researcher_id: int = Query(...), status_filter: Optional[str] = Query(None, alias="status")):
+    try:
+        return ResearchService.get_received_connection_requests(researcher_id, status=status_filter)
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
+@app.post("/api/connections/{request_id}/accept")
+def accept_connection_request_endpoint(request_id: int, req: ConnectionActionRequest):
+    try:
+        ok, msg = ResearchService.accept_connection_request(request_id, req.current_researcher_id)
+        if not ok:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+        return {"success": True, "message": msg}
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
+@app.post("/api/connections/{request_id}/reject")
+def reject_connection_request_endpoint(request_id: int, req: ConnectionActionRequest):
+    try:
+        ok, msg = ResearchService.reject_connection_request(request_id, req.current_researcher_id)
+        if not ok:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+        return {"success": True, "message": msg}
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
+@app.post("/api/connections/{request_id}/cancel")
+def cancel_connection_request_endpoint(request_id: int, req: ConnectionActionRequest):
+    try:
+        ok, msg = ResearchService.cancel_connection_request(request_id, req.current_researcher_id)
+        if not ok:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+        return {"success": True, "message": msg}
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
+@app.post("/api/connections/{connection_id}/disconnect")
+def disconnect_connection_endpoint(connection_id: int, req: ConnectionActionRequest):
+    try:
+        ok, msg = ResearchService.disconnect_researcher(connection_id, req.current_researcher_id)
+        if not ok:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+        return {"success": True, "message": msg}
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
+@app.get("/api/connections/researcher/{researcher_id}")
+def get_researcher_connections_endpoint(researcher_id: int):
+    try:
+        return ResearchService.get_accepted_connections(researcher_id)
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
+@app.get("/api/connections/activity")
+def get_connection_activity_endpoint(researcher_id: int = Query(...), limit: int = Query(25)):
+    try:
+        return ResearchService.get_connection_activity(researcher_id, limit)
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
+@app.get("/api/connections/suggestions/{researcher_id}")
+def get_collaboration_suggestions_endpoint(researcher_id: int, limit: int = Query(4)):
+    """Return suggested researchers to collaborate with, based on shared areas/skills."""
+    try:
+        return ResearchService.get_collaboration_suggestions(researcher_id, limit)
+    except DatabaseConnectionError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
+@app.get("/api/connections/pending-count")
+def get_pending_incoming_count_endpoint(researcher_id: int = Query(...)):
+    """Return the count of pending incoming connection requests for a researcher."""
+    try:
+        rows = ResearchService.get_received_connection_requests(researcher_id, status="PENDING")
+        return {"count": len(rows) if isinstance(rows, list) else 0}
     except DatabaseConnectionError as err:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))

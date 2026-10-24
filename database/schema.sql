@@ -61,6 +61,19 @@ CREATE TABLE IF NOT EXISTS `users` (
     INDEX `idx_user_email` (`email`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- 4b. PASSWORD RESETS TABLE (SECURE TOKEN STORAGE)
+CREATE TABLE IF NOT EXISTS `password_resets` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `user_id` INT NOT NULL,
+    `token_hash` VARCHAR(255) NOT NULL,
+    `expires_at` DATETIME NOT NULL,
+    `used_at` DATETIME DEFAULT NULL,
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE,
+    INDEX `idx_pwd_reset_token` (`token_hash`),
+    INDEX `idx_pwd_reset_user` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- 5. RESEARCHERS TABLE
 CREATE TABLE IF NOT EXISTS `researchers` (
     `id` INT AUTO_INCREMENT PRIMARY KEY,
@@ -97,6 +110,7 @@ CREATE TABLE IF NOT EXISTS `researcher_areas` (
     `id` INT AUTO_INCREMENT PRIMARY KEY,
     `researcher_id` INT NOT NULL,
     `research_area_id` INT NOT NULL,
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (`researcher_id`) REFERENCES `researchers`(`id`) ON DELETE CASCADE,
     FOREIGN KEY (`research_area_id`) REFERENCES `research_areas`(`id`) ON DELETE CASCADE,
     UNIQUE KEY `unique_researcher_area` (`researcher_id`, `research_area_id`)
@@ -114,6 +128,8 @@ CREATE TABLE IF NOT EXISTS `researcher_skills` (
     `id` INT AUTO_INCREMENT PRIMARY KEY,
     `researcher_id` INT NOT NULL,
     `skill_id` INT NOT NULL,
+    `proficiency_level` VARCHAR(50) DEFAULT 'Intermediate',
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (`researcher_id`) REFERENCES `researchers`(`id`) ON DELETE CASCADE,
     FOREIGN KEY (`skill_id`) REFERENCES `skills`(`id`) ON DELETE CASCADE,
     UNIQUE KEY `unique_researcher_skill` (`researcher_id`, `skill_id`)
@@ -175,6 +191,7 @@ CREATE TABLE IF NOT EXISTS `community_members` (
     `community_id` INT NOT NULL,
     `researcher_id` INT NOT NULL,
     `role` VARCHAR(100) DEFAULT 'Member',
+    `joined_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (`community_id`) REFERENCES `communities`(`id`) ON DELETE CASCADE,
     FOREIGN KEY (`researcher_id`) REFERENCES `researchers`(`id`) ON DELETE CASCADE,
     UNIQUE KEY `unique_community_member` (`community_id`, `researcher_id`)
@@ -193,4 +210,20 @@ CREATE TABLE IF NOT EXISTS `collaborations` (
     UNIQUE KEY `unique_collaboration_pair` (`researcher1_id`, `researcher2_id`),
     INDEX `idx_collab_r1` (`researcher1_id`),
     INDEX `idx_collab_r2` (`researcher2_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 16. RESEARCHER CONNECTIONS TABLE (INVITATIONS & NETWORKING)
+CREATE TABLE IF NOT EXISTS `researcher_connections` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `sender_id` INT NOT NULL,
+    `receiver_id` INT NOT NULL,
+    `status` ENUM('PENDING', 'ACCEPTED', 'REJECTED') DEFAULT 'PENDING',
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (`sender_id`) REFERENCES `researchers`(`id`) ON DELETE CASCADE,
+    FOREIGN KEY (`receiver_id`) REFERENCES `researchers`(`id`) ON DELETE CASCADE,
+    UNIQUE KEY `unique_connection_pair` (`sender_id`, `receiver_id`),
+    INDEX `idx_conn_sender` (`sender_id`),
+    INDEX `idx_conn_receiver` (`receiver_id`),
+    INDEX `idx_conn_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -141,20 +141,25 @@ class TestCampusXDatabaseAndServices(unittest.TestCase):
             """,
             ("Test Researcher", email, "demo_hash", "Student", 1, 1, 1)
         )
+        researcher = None
+        try:
+            researcher = ResearchService.ensure_researcher_for_user(user_id)
+            self.assertIsNotNone(researcher)
+            self.assertEqual(researcher["user_id"], user_id)
+            self.assertEqual(researcher["name"], "Test Researcher")
 
-        researcher = ResearchService.ensure_researcher_for_user(user_id)
-        self.assertIsNotNone(researcher)
-        self.assertEqual(researcher["user_id"], user_id)
-        self.assertEqual(researcher["name"], "Test Researcher")
+            duplicate = ResearchService.ensure_researcher_for_user(user_id)
+            self.assertEqual(duplicate["id"], researcher["id"])
 
-        duplicate = ResearchService.ensure_researcher_for_user(user_id)
-        self.assertEqual(duplicate["id"], researcher["id"])
-
-        count = db.execute_query(
-            "SELECT COUNT(*) as c FROM researchers WHERE user_id = %s;",
-            (user_id,)
-        )[0]["c"]
-        self.assertEqual(count, 1)
+            count = db.execute_query(
+                "SELECT COUNT(*) as c FROM researchers WHERE user_id = %s;",
+                (user_id,)
+            )[0]["c"]
+            self.assertEqual(count, 1)
+        finally:
+            if researcher and researcher.get("id"):
+                db.execute_non_query("DELETE FROM researchers WHERE id = %s;", (researcher["id"],))
+            db.execute_non_query("DELETE FROM users WHERE id = %s;", (user_id,))
 
 
 class TestCampusXAPIClient(unittest.TestCase):

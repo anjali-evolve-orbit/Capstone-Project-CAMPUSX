@@ -103,6 +103,22 @@ class CampusXAPIClient:
     def logout(self):
         self.current_user = None
 
+    def forgot_password(self, email: str) -> Dict[str, Any]:
+        """Request a password reset token for the given email address."""
+        return self._request("POST", "/api/auth/forgot-password", json_data={"email": email})
+
+    def reset_password(self, token: str, new_password: str, confirm_password: str) -> Dict[str, Any]:
+        """Reset password using a single-use token."""
+        return self._request(
+            "POST",
+            "/api/auth/reset-password",
+            json_data={
+                "token": token,
+                "new_password": new_password,
+                "confirm_password": confirm_password
+            }
+        )
+
     # --- Ecosystem Hierarchy ---
     def get_campuses(self) -> List[Dict[str, Any]]:
         return self._request("GET", "/api/ecosystem/campuses")
@@ -137,6 +153,10 @@ class CampusXAPIClient:
         if search:
             params["search"] = search
         return self._request("GET", "/api/researchers", params=params)
+
+    def search_researchers(self, query: str) -> List[Dict[str, Any]]:
+        """Search researchers by full name, partial name, email, or department."""
+        return self.get_researchers(search=query)
 
     def get_researcher_detail(self, researcher_id: int) -> Dict[str, Any]:
         return self._request("GET", f"/api/researchers/{researcher_id}")
@@ -189,22 +209,65 @@ class CampusXAPIClient:
     def create_paper(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self._request("POST", "/api/papers", json_data=payload)
 
+    def update_paper(self, paper_id: int, current_researcher_id: int, updates: Dict[str, Any]) -> Dict[str, Any]:
+        """Update a paper's metadata. Only authorized authors may update."""
+        payload = {"current_researcher_id": current_researcher_id, **updates}
+        return self._request("PUT", f"/api/papers/{paper_id}", json_data=payload)
+
+    def delete_paper(self, paper_id: int, current_researcher_id: int) -> Dict[str, Any]:
+        """Delete a paper. Only authorized authors may delete."""
+        payload = {"current_researcher_id": current_researcher_id}
+        return self._request("DELETE", f"/api/papers/{paper_id}", json_data=payload)
+
     # --- Research Areas ---
     def get_research_areas(self) -> List[Dict[str, Any]]:
         return self._request("GET", "/api/research-areas")
+
+    def create_research_area(self, name: str, description: Optional[str] = None, icon_name: Optional[str] = "AcademicCap") -> Dict[str, Any]:
+        payload = {"name": name, "description": description, "icon_name": icon_name}
+        return self._request("POST", "/api/research-areas", json_data=payload)
 
     # --- Communities ---
     def get_communities(
         self,
         institution_id: Optional[int] = None,
-        search: Optional[str] = None
+        search: Optional[str] = None,
+        user_id: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         params = {}
         if institution_id:
             params["institution_id"] = institution_id
         if search:
             params["search"] = search
+        uid = user_id or (self.current_user.get("id") if self.current_user else None)
+        if uid:
+            params["user_id"] = uid
         return self._request("GET", "/api/communities", params=params)
+
+    def get_community_detail(self, community_id: int, user_id: Optional[int] = None) -> Dict[str, Any]:
+        params = {}
+        uid = user_id or (self.current_user.get("id") if self.current_user else None)
+        if uid:
+            params["user_id"] = uid
+        return self._request("GET", f"/api/communities/{community_id}", params=params)
+
+    def join_community(self, community_id: int, user_id: Optional[int] = None) -> Dict[str, Any]:
+        uid = user_id or (self.current_user.get("id") if self.current_user else None)
+        if not uid:
+            raise APIClientError("User authentication is required to join a community.")
+        return self._request("POST", f"/api/communities/{community_id}/join", json_data={"user_id": uid})
+
+    def leave_community(self, community_id: int, user_id: Optional[int] = None) -> Dict[str, Any]:
+        uid = user_id or (self.current_user.get("id") if self.current_user else None)
+        if not uid:
+            raise APIClientError("User authentication is required to leave a community.")
+        return self._request("POST", f"/api/communities/{community_id}/leave", json_data={"user_id": uid})
+
+    def get_my_communities(self, user_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        uid = user_id or (self.current_user.get("id") if self.current_user else None)
+        if not uid:
+            return []
+        return self._request("GET", "/api/communities/my/joined", params={"user_id": uid})
 
     # --- Network, Graph, BFS, DFS ---
     def get_network_graph(self) -> Dict[str, Any]:
@@ -250,6 +313,62 @@ class CampusXAPIClient:
     # --- Global Search ---
     def global_search(self, query: str) -> Dict[str, Any]:
         return self._request("GET", "/api/search", params={"q": query})
+
+    # --- Researcher Connections (Part 5) ---
+    def send_connection_request(self, sender_id: int, receiver_id: int) -> Dict[str, Any]:
+        payload = {"sender_researcher_id": sender_id, "receiver_researcher_id": receiver_id}
+        return self._request("POST", "/api/connections/request", json_data=payload)
+
+    def get_connection_status(self, current_id: int, target_id: int) -> Dict[str, Any]:
+        params = {"current_id": current_id, "target_id": target_id}
+        return self._request("GET", "/api/connections/status", params=params)
+
+    def get_sent_connection_requests(self, researcher_id: int) -> List[Dict[str, Any]]:
+        return self._request("GET", "/api/connections/sent", params={"researcher_id": researcher_id})
+
+    def get_received_connection_requests(self, researcher_id: int, status: Optional[str] = "PENDING") -> List[Dict[str, Any]]:
+        params = {"researcher_id": researcher_id}
+        if status:
+            params["status"] = status
+        return self._request("GET", "/api/connections/received", params=params)
+
+    def accept_connection_request(self, request_id: int, current_researcher_id: int) -> Dict[str, Any]:
+        payload = {"current_researcher_id": current_researcher_id}
+        return self._request("POST", f"/api/connections/{request_id}/accept", json_data=payload)
+
+    def reject_connection_request(self, request_id: int, current_researcher_id: int) -> Dict[str, Any]:
+        payload = {"current_researcher_id": current_researcher_id}
+        return self._request("POST", f"/api/connections/{request_id}/reject", json_data=payload)
+
+    def cancel_connection_request(self, request_id: int, current_researcher_id: int) -> Dict[str, Any]:
+        payload = {"current_researcher_id": current_researcher_id}
+        return self._request("POST", f"/api/connections/{request_id}/cancel", json_data=payload)
+
+    def disconnect_researcher(self, connection_id: int, current_researcher_id: int) -> Dict[str, Any]:
+        payload = {"current_researcher_id": current_researcher_id}
+        return self._request("POST", f"/api/connections/{connection_id}/disconnect", json_data=payload)
+
+    def get_researcher_connections(self, researcher_id: int) -> List[Dict[str, Any]]:
+        return self._request("GET", f"/api/connections/researcher/{researcher_id}")
+
+    def get_connection_activity(self, researcher_id: int, limit: int = 25) -> List[Dict[str, Any]]:
+        return self._request("GET", "/api/connections/activity", params={"researcher_id": researcher_id, "limit": limit})
+
+    def get_collaboration_suggestions(self, researcher_id: int, limit: int = 4) -> List[Dict[str, Any]]:
+        """Return researchers suggested for collaboration based on shared areas/skills."""
+        return self._request(
+            "GET",
+            f"/api/connections/suggestions/{researcher_id}",
+            params={"limit": limit}
+        )
+
+    def get_pending_incoming_count(self, researcher_id: int) -> int:
+        """Return count of pending incoming connection requests."""
+        try:
+            data = self._request("GET", "/api/connections/pending-count", params={"researcher_id": researcher_id})
+            return data.get("count", 0)
+        except Exception:
+            return 0
 
 
 # Global client instance

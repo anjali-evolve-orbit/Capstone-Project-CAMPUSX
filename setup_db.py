@@ -94,7 +94,8 @@ def run_setup():
             ("papers", "Academic Papers"),
             ("collaborations", "Collaborations (Graph Edges)"),
             ("communities", "Academic Communities"),
-            ("users", "Users")
+            ("users", "Users"),
+            ("password_resets", "Password Reset Tokens")
         ]
         for tbl, label in tables:
             cursor.execute(f"SELECT COUNT(*) FROM `{tbl}`;")

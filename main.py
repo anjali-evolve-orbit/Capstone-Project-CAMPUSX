@@ -24,6 +24,7 @@ from api_client.client import api_client
 from ui.theme import Theme
 from ui.landing import LandingView
 from ui.login import LoginView
+from ui.forgot_password import ForgotPasswordView
 from ui.register import RegisterView
 from ui.app_shell import AppShell
 from ui.dashboard import DashboardView
@@ -109,9 +110,21 @@ class CampusXApp(ctk.CTk):
             parent=self.main_container,
             on_login_success=self._on_auth_success,
             on_go_to_register=self.show_register,
-            on_back_to_landing=self.show_landing
+            on_back_to_landing=self.show_landing,
+            on_go_to_forgot_password=self.show_forgot_password
         )
         login.pack(fill="both", expand=True)
+
+    def show_forgot_password(self):
+        """Display Forgot / Reset Password Screen."""
+        self._clear_main_container()
+        self.app_shell = None
+        forgot_view = ForgotPasswordView(
+            parent=self.main_container,
+            on_go_to_login=self.show_login,
+            on_back_to_landing=self.show_landing
+        )
+        forgot_view.pack(fill="both", expand=True)
 
     def show_register(self):
         """Display Registration Screen."""
@@ -275,6 +288,7 @@ class CampusXApp(ctk.CTk):
         elif tab_id == "communities":
             view = CommunitiesView(
                 parent=parent,
+                current_user=self.current_user,
                 on_select_researcher=self.show_researcher_profile
             )
         elif tab_id == "network":

@@ -23,3 +23,6 @@ Thumbs.db
 *.db
 *.sqlite
 *.sqlite3
+
+.remembered_email
+.remembered_email

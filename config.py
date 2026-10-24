@@ -32,6 +32,15 @@ API_PORT = int(os.getenv("API_PORT", "8000"))
 API_BASE_URL = os.getenv("API_BASE_URL", f"http://{API_HOST}:{API_PORT}")
 SECRET_KEY = os.getenv("SECRET_KEY", "campusx_secret_key_2026")
 
+# --- Email / SMTP Configuration ---
+SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "").strip()
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").strip()
+SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", SMTP_USER or "noreply@campusx.edu").strip()
+SMTP_TLS = os.getenv("SMTP_TLS", "true").lower() in ("true", "1", "yes")
+DEV_MODE = os.getenv("DEV_MODE", "true").lower() in ("true", "1", "yes")
+
 # --- Asset Paths ---
 ASSETS_DIR = BASE_DIR / "assets"
 LOGO_PATH = ASSETS_DIR / "campusx_logo.png"

@@ -189,13 +189,40 @@ class AppShell(ctk.CTkFrame):
             bg_color="#EBF4FF",
             text_color=Theme.ACADEMIC_BLUE
         )
-        context_badge.pack(side="left", padx=(0, 16))
+        context_badge.pack(side="left", padx=(0, 14))
 
-        # Profile Pill
+        # Pending connection requests badge in top bar
+        req_count = 0
+        try:
+            uid = self.user.get("id")
+            if uid:
+                res = api_client.get_researcher_by_user(uid)
+                rid = res.get("id") if res else None
+                if rid:
+                    pending = api_client.get_received_connection_requests(rid, status="PENDING")
+                    req_count = len(pending) if isinstance(pending, list) else 0
+        except Exception:
+            req_count = 0
+
+        if req_count > 0:
+            req_btn = ctk.CTkButton(
+                right_frame,
+                text=f"🔔 {req_count} Request{'s' if req_count != 1 else ''}",
+                fg_color="#FEF3C7",
+                hover_color="#FDE68A",
+                text_color="#B45309",
+                font=(Theme.FONT_FAMILY, 11, "bold"),
+                height=32,
+                corner_radius=16,
+                command=lambda: self._on_nav_clicked("my_profile")
+            )
+            req_btn.pack(side="left", padx=(0, 14))
+
+        # Profile Pill (clickable to navigate to My Profile)
         user_name = self.user.get("full_name", "User")
         initials = "".join([w[0] for w in user_name.split() if w])[:2]
 
-        prof_box = ctk.CTkFrame(right_frame, fg_color=Theme.MUTED_BG, corner_radius=18, height=36)
+        prof_box = ctk.CTkFrame(right_frame, fg_color=Theme.MUTED_BG, corner_radius=18, height=36, cursor="hand2")
         prof_box.pack(side="left")
 
         av = ctk.CTkLabel(
@@ -217,6 +244,10 @@ class AppShell(ctk.CTkFrame):
             text_color=Theme.NAVY
         )
         u_lbl.pack(side="left", padx=(0, 12))
+
+        prof_box.bind("<Button-1>", lambda e: self._on_nav_clicked("my_profile"))
+        u_lbl.bind("<Button-1>", lambda e: self._on_nav_clicked("my_profile"))
+        av.bind("<Button-1>", lambda e: self._on_nav_clicked("my_profile"))
 
     def _handle_search(self):
         query = self.search_entry.get().strip()

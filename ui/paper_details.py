@@ -79,8 +79,14 @@ class PaperDetailsView(ctk.CTkScrollableFrame):
         badge_row = ctk.CTkFrame(h_inner, fg_color="transparent")
         badge_row.pack(fill="x", pady=(0, 8))
 
-        area_name = p.get("primary_area_name", "Academic Research")
-        create_badge(badge_row, text=f"🔬 {area_name}", bg_color="#EEF2FF", text_color=Theme.ACADEMIC_BLUE).pack(side="left")
+        # Show ALL research areas as chips
+        all_areas = p.get("research_areas") or []
+        if not all_areas:
+            # Fall back to primary_area_name if junction table data absent
+            pname = p.get("primary_area_name", "Academic Research")
+            all_areas = [{"name": pname}]
+        for area in all_areas:
+            create_badge(badge_row, text=f"🔬 {area.get('name', '')}", bg_color="#EEF2FF", text_color=Theme.ACADEMIC_BLUE).pack(side="left", padx=(0, 6))
 
         create_badge(badge_row, text=f"📅 Published {p.get('publication_year')}", bg_color="#F1F5F9", text_color=Theme.DARK_TEXT).pack(side="left", padx=8)
 
@@ -136,11 +142,11 @@ class PaperDetailsView(ctk.CTkScrollableFrame):
             auth_grid.columnconfigure((0, 1), weight=1, uniform="auth_grid")
 
             for idx, a in enumerate(authors):
-                row = idx // 2
+                row_idx = idx // 2
                 col = idx % 2
 
                 a_box = ctk.CTkFrame(auth_grid, fg_color=Theme.SOFT_BG, border_color=Theme.BORDER, border_width=1, corner_radius=8)
-                a_box.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
+                a_box.grid(row=row_idx, column=col, padx=6, pady=6, sticky="nsew")
 
                 box_inner = ctk.CTkFrame(a_box, fg_color="transparent")
                 box_inner.pack(fill="both", expand=True, padx=14, pady=12)
@@ -167,8 +173,11 @@ class PaperDetailsView(ctk.CTkScrollableFrame):
                 a_name = ctk.CTkLabel(text_col, text=a["name"], font=Theme.FONT_BODY_BOLD, text_color=Theme.NAVY)
                 a_name.pack(anchor="w")
 
-                a_desig = ctk.CTkLabel(text_col, text=f"{a.get('designation', '')}", font=Theme.FONT_CAPTION, text_color=Theme.SECONDARY_TEXT)
-                a_desig.pack(anchor="w")
+                # Show role if available (lead_author / co_author)
+                role = a.get("role", "")
+                role_display = "⭐ Lead Author" if role in ("lead_author", "corresponding") else ("Co-Author" if role == "co_author" else a.get("designation", ""))
+                role_color = "#15803D" if "Lead" in role_display else Theme.SECONDARY_TEXT
+                ctk.CTkLabel(text_col, text=role_display, font=Theme.FONT_CAPTION, text_color=role_color).pack(anchor="w")
 
                 dept_inst = f"{a.get('department_name', '')} · {a.get('institution_name', '')}"
                 ctk.CTkLabel(box_inner, text=dept_inst, font=Theme.FONT_CAPTION, text_color=Theme.DARK_TEXT).pack(anchor="w", pady=(6, 8))
@@ -183,6 +192,7 @@ class PaperDetailsView(ctk.CTkScrollableFrame):
                 view_prof_btn.pack(anchor="w")
 
         # 4. Related Papers in Same Research Area
+
         rel_papers = p.get("related_papers", [])
         if rel_papers:
             rel_card = create_card(self)
